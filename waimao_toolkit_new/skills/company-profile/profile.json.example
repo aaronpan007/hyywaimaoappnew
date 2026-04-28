@@ -1,0 +1,28 @@
+{
+  "company_name": "",
+  "one_line_intro": "",
+  "full_intro": "",
+  "location": "",
+  "industry": "",
+  "established": "",
+  "scale": "",
+  "website": "",
+  "products": [],
+  "core_competencies": [],
+  "certifications": [],
+  "target_customer_types": [],
+  "case_studies": [],
+  "unique_selling_points": [],
+  "customer_matching_guide": [],
+  "cooperation_models": [],
+  "boundaries": {
+    "claims_we_can_make": [],
+    "claims_we_cannot_make": [],
+    "sensitive_topics": []
+  },
+  "metadata": {
+    "created_at": "",
+    "updated_at": "",
+    "data_sources": []
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "base_token": "",
+  "table_id": "",
+  "table_link": "",
+  "table_name": "",
+  "source": "customer-acquisition",
+  "current": {
+    "base_token": "",
+    "table_id": "",
+    "table_link": "",
+    "table_name": "",
+    "source": ""
+  },
+  "history": []
+}
