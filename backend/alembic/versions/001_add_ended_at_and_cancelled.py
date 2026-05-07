@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "001_add_ended_at_and_cancelled"
-down_revision = None
+down_revision = '000_initial'
 branch_labels = None
 depends_on = None
 

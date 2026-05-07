@@ -8,3 +8,4 @@ build/
 *.db
 alembic/versions/*.py
 !alembic/versions/__init__.py
+!alembic/versions/000_initial.py
