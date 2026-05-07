@@ -16,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # === Layer 1: no foreign keys ===
+
     # users
     op.create_table(
         'users',
@@ -27,19 +29,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
     )
 
-    # user_settings
+    # === Layer 2: depends on users ===
+
+    # tasks (without ended_at, cancelled - those come in migration 001)
     op.create_table(
-        'user_settings',
+        'tasks',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id'), nullable=False),
-        sa.Column('sender_name', sa.Text(), nullable=False, server_default=''),
-        sa.Column('from_email_prefix', sa.Text(), nullable=False, server_default=''),
-        sa.Column('reply_to_email', sa.Text(), nullable=False, server_default=''),
-        sa.Column('profile_id', sa.Integer(), sa.ForeignKey('company_profiles.id'), nullable=True),
-        # confirmed_at added in migration 8a1b2c3d4e5f
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column('type', sa.Text(), nullable=False),
+        sa.Column('status', sa.Text(), nullable=False, server_default='pending'),
+        sa.Column('params', sa.JSON(), nullable=True),
+        sa.Column('result_summary', sa.JSON(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
         sa.PrimaryKeyConstraint('id'),
     )
+
+    # === Layer 3: depends on users + tasks ===
 
     # company_profiles
     op.create_table(
@@ -56,17 +62,17 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
     )
 
-    # tasks (without ended_at, cancelled - those come in migration 001)
+    # user_settings (depends on users + company_profiles)
     op.create_table(
-        'tasks',
+        'user_settings',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('user_id', sa.Integer(), sa.ForeignKey('users.id'), nullable=False),
-        sa.Column('type', sa.Text(), nullable=False),
-        sa.Column('status', sa.Text(), nullable=False, server_default='pending'),
-        sa.Column('params', sa.JSON(), nullable=True),
-        sa.Column('result_summary', sa.JSON(), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True),
+        sa.Column('sender_name', sa.Text(), nullable=False, server_default=''),
+        sa.Column('from_email_prefix', sa.Text(), nullable=False, server_default=''),
+        sa.Column('reply_to_email', sa.Text(), nullable=False, server_default=''),
+        sa.Column('profile_id', sa.Integer(), sa.ForeignKey('company_profiles.id'), nullable=True),
+        # confirmed_at added in migration 8a1b2c3d4e5f
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
     )
 
@@ -123,14 +129,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
     )
 
-    # alembic_version is managed by Alembic automatically — do NOT create it here
-
 
 def downgrade() -> None:
     op.drop_table('outreach_emails')
     op.drop_table('leads')
     op.drop_table('task_logs')
-    op.drop_table('tasks')
     op.drop_table('user_settings')
     op.drop_table('company_profiles')
+    op.drop_table('tasks')
     op.drop_table('users')
