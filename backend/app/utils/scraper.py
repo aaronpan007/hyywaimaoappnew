@@ -8,6 +8,7 @@ import asyncio
 import logging
 import random
 import re
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,11 +33,17 @@ NAV_PATTERNS = [
     re.compile(r"(?:products?|services?|产品|サービス|제품)", re.I),
 ]
 
-# Pre-installed Chromium path
-_CHROMIUM_PATH = (
-    Path.home() / "AppData" / "Local" / "ms-playwright" / "chromium-1208"
-    / "chrome-win64" / "chrome.exe"
-)
+# Pre-installed Chromium path (platform-aware)
+if sys.platform == "win32":
+    _CHROMIUM_PATH = (
+        Path.home() / "AppData" / "Local" / "ms-playwright" / "chromium-1208"
+        / "chrome-win64" / "chrome.exe"
+    )
+else:
+    _CHROMIUM_PATH = (
+        Path.home() / ".cache" / "ms-playwright" / "chromium-1208"
+        / "chrome-linux" / "chrome"
+    )
 
 
 def _find_chromium() -> str | None:

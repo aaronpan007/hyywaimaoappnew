@@ -21,3 +21,4 @@ class Lead(Base, TimestampMixin):
     business_match: Mapped[str] = mapped_column(Text, nullable=False, default="")
     outreach_suggestion: Mapped[str] = mapped_column(Text, nullable=False, default="")
     match_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    user_note: Mapped[str] = mapped_column(Text, nullable=False, default="")

@@ -116,27 +116,25 @@ export default function PipelineTimeline({ data, onStopTask }: PipelineTimelineP
               </div>
 
               {/* Right column: content */}
-              <div className="flex-1 pb-4">
-                <div className="flex items-baseline justify-between">
-                  <span
-                    className={`text-[14px] ${
-                      effectiveStatus === "pending" || effectiveStatus === "cancelled"
-                        ? "text-text-tertiary"
-                        : "text-text-primary font-medium"
-                    }`}
-                  >
-                    {step.name}
-                  </span>
-                  {step.message && effectiveStatus !== "pending" && (
-                    <span className={`text-[13px] ml-3 shrink-0 ${
-                      effectiveStatus === "cancelled"
-                        ? "text-amber-500"
-                        : "text-text-secondary"
-                    }`}>
-                      {step.message}
-                    </span>
-                  )}
-                </div>
+              <div className="flex-1 pb-4 min-w-0">
+                <span
+                  className={`text-[14px] ${
+                    effectiveStatus === "pending" || effectiveStatus === "cancelled"
+                      ? "text-text-tertiary"
+                      : "text-text-primary font-medium"
+                  }`}
+                >
+                  {step.name}
+                </span>
+                {step.message && effectiveStatus !== "pending" && (
+                  <p className={`text-[13px] mt-0.5 break-words ${
+                    effectiveStatus === "cancelled"
+                      ? "text-amber-500"
+                      : "text-text-secondary"
+                  }`}>
+                    {step.message}
+                  </p>
+                )}
 
                 {/* Progress bar for running step */}
                 {effectiveStatus === "running" && step.progress !== undefined && (

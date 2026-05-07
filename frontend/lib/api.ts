@@ -13,6 +13,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
+    credentials: "include",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -48,15 +49,26 @@ interface LeadResponse extends Omit<Lead, "emailStatus"> {
 interface ProfileResponse {
   id: number;
   companyName: string;
+  oneLineIntro?: string;
+  fullIntro?: string;
+  location?: string;
   industry?: string;
   website?: string;
   established?: string;
+  scale?: string;
   employees?: string;
-  certifications?: string;
-  cooperationModels?: string;
-  products: string[];
-  competencies: string[];
-  caseStudies: { project: string; description: string }[];
+  certifications?: any[] | string;
+  cooperationModels?: any[] | string;
+  products: any[];
+  competencies: any[];
+  targetCustomerTypes?: any[];
+  caseStudies: any[];
+  uniqueSellingPoints?: any[];
+  customerMatchingGuide?: any[];
+  boundaries?: Record<string, any>;
+  metadata?: Record<string, any>;
+  profileData?: Record<string, any>;
+  profileMarkdown?: string;
   collectedAt: string;
   isCurrent: boolean;
 }
@@ -100,13 +112,43 @@ export async function getProfile(): Promise<CompanyProfile | null> {
   }
 }
 
+export async function exportProfileDocx(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/profile/export`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!res.ok) {
+    throw new Error("画像导出失败");
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/);
+  const filename = filenameMatch
+    ? decodeURIComponent(filenameMatch[1])
+    : `公司画像_${new Date().toISOString().slice(0, 10)}.docx`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Leads ────────────────────────────────────────────────────────────
 
 export interface GetLeadsParams {
   page?: number;
   pageSize?: number;
+  taskId?: number;
   search?: string;
   country?: string;
+  industry?: string;
+  minScore?: number;
   sortBy?: string;
   sortOrder?: "asc" | "desc";
 }
@@ -117,8 +159,11 @@ export async function getLeads(
   const sp = new URLSearchParams();
   if (params?.page) sp.set("page", String(params.page));
   if (params?.pageSize) sp.set("pageSize", String(params.pageSize));
+  if (params?.taskId) sp.set("taskId", String(params.taskId));
   if (params?.search) sp.set("search", params.search);
   if (params?.country) sp.set("country", params.country);
+  if (params?.industry) sp.set("industry", params.industry);
+  if (params?.minScore !== undefined) sp.set("minScore", String(params.minScore));
   if (params?.sortBy) sp.set("sortBy", params.sortBy);
   if (params?.sortOrder) sp.set("sortOrder", params.sortOrder);
 
@@ -127,8 +172,75 @@ export async function getLeads(
   return apiFetch<PaginatedResponse<Lead>>(path);
 }
 
-export async function exportLeadsExcel(): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/leads/0/export`, {
+export async function deleteLeads(leadIds: number[]): Promise<{ deleted: number }> {
+  return apiFetch<{ deleted: number }>("/api/leads", {
+    method: "DELETE",
+    body: JSON.stringify({ lead_ids: leadIds }),
+  });
+}
+
+export async function updateLead(leadId: number, fields: { contactName?: string; email?: string; userNote?: string }): Promise<void> {
+  const body: Record<string, string> = {};
+  if (fields.contactName !== undefined) body["contact_name"] = fields.contactName;
+  if (fields.email !== undefined) body["email"] = fields.email;
+  if (fields.userNote !== undefined) body["user_note"] = fields.userNote;
+  return apiFetch<void>(`/api/leads/${leadId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateLeadEmail(
+  leadId: number,
+  fields: { emailSubject?: string; emailBody?: string }
+): Promise<{ emailSubject: string; emailBody: string; sendStatus: string }> {
+  const body: Record<string, string> = {};
+  if (fields.emailSubject !== undefined) body["email_subject"] = fields.emailSubject;
+  if (fields.emailBody !== undefined) body["email_body"] = fields.emailBody;
+  const res = await apiFetch<any>(
+    `/api/emails/leads/${leadId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }
+  );
+  return {
+    emailSubject: res.emailSubject ?? res.email_subject ?? "",
+    emailBody: res.emailBody ?? res.email_body ?? "",
+    sendStatus: res.sendStatus ?? res.send_status ?? "draft",
+  };
+}
+
+export interface LeadWithEmail extends Lead {
+  emailSubject?: string;
+  emailBody?: string;
+}
+
+export async function getLeadsWithEmails(
+  taskId: number,
+  params?: { page?: number; pageSize?: number; search?: string }
+): Promise<PaginatedResponse<LeadWithEmail>> {
+  const sp = new URLSearchParams();
+  if (params?.page) sp.set("page", String(params.page));
+  if (params?.pageSize) sp.set("pageSize", String(params.pageSize));
+  if (params?.search) sp.set("search", params.search);
+
+  const query = sp.toString();
+  const path = `/api/leads/${taskId}/emails${query ? `?${query}` : ""}`;
+  return apiFetch<PaginatedResponse<LeadWithEmail>>(path);
+}
+
+export async function exportLeadsExcel(params?: Omit<GetLeadsParams, "page" | "pageSize" | "sortBy" | "sortOrder">): Promise<void> {
+  const sp = new URLSearchParams();
+  if (params?.taskId) sp.set("taskId", String(params.taskId));
+  if (params?.search) sp.set("search", params.search);
+  if (params?.country) sp.set("country", params.country);
+  if (params?.industry) sp.set("industry", params.industry);
+  if (params?.minScore !== undefined) sp.set("minScore", String(params.minScore));
+
+  const query = sp.toString();
+  const res = await fetch(`${BASE_URL}/api/leads/0/export${query ? `?${query}` : ""}`, {
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
   });
 
@@ -160,6 +272,62 @@ export async function getEmails(params?: {
   const query = sp.toString();
   const path = `/api/emails${query ? `?${query}` : ""}`;
   return apiFetch(path);
+}
+
+// ─── Email Export ─────────────────────────────────────────────────────
+
+export async function exportEmailsExcel(taskId?: number): Promise<void> {
+  if (!taskId) return;
+  const res = await fetch(`${BASE_URL}/api/emails/${taskId}/export`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!res.ok) {
+    throw new Error("邮件导出失败");
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `emails_${taskId}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Conversations ──────────────────────────────────────────────────
+
+export interface ConversationListItem {
+  id: number;
+  title: string;
+  mode: string;
+  createdAt: string;
+  updatedAt: string | null;
+  messageCount: number;
+}
+
+export interface ConversationMessageResponse {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  messageType: string;
+  extraData: Record<string, any> | null;
+  createdAt: string;
+}
+
+export async function getConversations(): Promise<ConversationListItem[]> {
+  return apiFetch<ConversationListItem[]>("/api/conversations");
+}
+
+export async function getConversationMessages(
+  conversationId: number
+): Promise<ConversationMessageResponse[]> {
+  return apiFetch<ConversationMessageResponse[]>(
+    `/api/conversations/${conversationId}/messages`
+  );
 }
 
 // ─── Tasks ────────────────────────────────────────────────────────────
@@ -225,7 +393,7 @@ export interface StreamHandlers {
   }) => void;
   onTaskCancelled?: (data: { taskId: number }) => void;
   onTaskStale?: (data: { taskId: number }) => void;
-  onDone?: (data: { taskId?: number }) => void;
+  onDone?: (data: { taskId?: number; conversationId?: number }) => void;
   onError?: (error: Error) => void;
 }
 
@@ -287,13 +455,24 @@ async function parseSSEStream(
           break;
 
         case "confirm_params":
-          handlers.onConfirmParams?.({
-            industry: data.industry || "",
-            country: data.country || "",
-            keywords: data.keywords || [],
-            num: data.num || 20,
-            reply: data.reply || "",
-          });
+          if (data.confirm_type === "email_craft") {
+            handlers.onConfirmParams?.({
+              industry: "",
+              country: "",
+              keywords: [],
+              num: data.lead_count || 0,
+              reply: data.reply || "",
+              confirmType: "email_craft",
+            });
+          } else {
+            handlers.onConfirmParams?.({
+              industry: data.industry || "",
+              country: data.country || "",
+              keywords: data.keywords || [],
+              num: data.num || 20,
+              reply: data.reply || "",
+            });
+          }
           break;
 
         case "config_required":
@@ -307,6 +486,7 @@ async function parseSSEStream(
           const callout = data.callout
             ? {
                 ...data.callout,
+                taskId,
                 actions: (data.callout.actions || []).map((a: any) => ({
                   label: a.label,
                   variant: a.variant,
@@ -351,7 +531,7 @@ async function parseSSEStream(
           break;
 
         case "done":
-          handlers.onDone?.({ taskId });
+          handlers.onDone?.({ taskId, conversationId: data.conversationId });
           resolve();
           break;
       }
@@ -369,14 +549,28 @@ async function parseSSEStream(
 export function streamChat(
   message: string,
   handlers: StreamHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  images?: string[],
+  files?: { filename: string; data: string }[],
+  conversationId?: number
 ): Promise<void> {
   return new Promise(async (resolve, reject) => {
     try {
+      const body: Record<string, unknown> = { message };
+      if (conversationId !== undefined) {
+        body.conversationId = conversationId;
+      }
+      if (images && images.length > 0) {
+        body.images = images;
+      }
+      if (files && files.length > 0) {
+        body.files = files;
+      }
       const res = await fetch(`${BASE_URL}/api/chat`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify(body),
         signal,
       });
 
@@ -420,6 +614,7 @@ export function reconnectStream(
   return new Promise(async (resolve, reject) => {
     try {
       const res = await fetch(`${BASE_URL}/api/tasks/${taskId}/stream`, {
+        credentials: "include",
         signal,
       });
 
@@ -451,11 +646,28 @@ export function reconnectStream(
 }
 
 /**
- * Start a pipeline after user confirms search parameters.
+ * Start a pipeline after user confirms parameters.
  * POST /api/tasks/start → SSE stream.
+ * Supports both customer_acquisition and email_craft.
  */
 export function startConfirmedPipeline(
-  params: { industry: string; country: string; keywords: string[]; num: number },
+  params: {
+    industry?: string;
+    country?: string;
+    keywords?: string[];
+    num?: number;
+    confirmType?: string;
+    language?: string;
+    files?: { filename: string; data: string }[];
+    leadIds?: number[];
+    sourceTaskId?: number;
+    conversationId?: number;
+    delayMin?: number;
+    delayMax?: number;
+    dailyLimit?: number;
+    dryRun?: boolean;
+    sendMode?: string;
+  },
   handlers: StreamHandlers,
   signal?: AbortSignal
 ): Promise<void> {
@@ -463,6 +675,7 @@ export function startConfirmedPipeline(
     try {
       const res = await fetch(`${BASE_URL}/api/tasks/start`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
         signal,

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
@@ -6,6 +8,8 @@ from app.schemas.chat import StartPipelineRequest
 from app.schemas.common import PaginatedResponse
 from app.schemas.task import TaskDetailResponse, TaskListItem
 from app.services import chat_service, task_manager, task_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -88,7 +92,7 @@ async def stream_task(
         raise HTTPException(404, "Task not found")
 
     return StreamingResponse(
-        chat_service.stream_task_progress(task_id, db),
+        chat_service.stream_task_progress(task_id, db, conversation_id=None),
         media_type="text/event-stream",
         headers=chat_service.SSE_HEADERS,
     )
@@ -98,21 +102,67 @@ async def stream_task(
 async def start_pipeline(
     req: StartPipelineRequest, db: DBSession, user_id: CurrentUser
 ):
-    """Start a pipeline after user confirms search parameters.
+    """Start a pipeline after user confirms parameters.
 
+    Dispatches by confirm_type: customer_acquisition, email_craft, or email_blast.
     Creates a Task, launches the pipeline, and returns SSE stream.
     """
-    params = {
-        "industry": req.industry,
-        "country": req.country,
-        "keywords": req.keywords,
-        "num": req.num,
-    }
+    confirm_type = req.confirm_type
 
-    result = await chat_service.start_pipeline(params, db, user_id)
+    if confirm_type == "email_craft":
+        # Require explicit lead range: lead_ids, source_task_id, or uploaded files
+        has_lead_ids = bool(req.lead_ids)
+        has_source_task = bool(req.source_task_id)
+        has_files = bool(req.files)
+        if not has_lead_ids and not has_source_task and not has_files:
+            raise HTTPException(
+                400,
+                "请先选择需要生成开发信的客户。您可以前往「客户名单」页面选择客户，或上传客户资料文件。",
+            )
+
+        source_task_id = req.source_task_id
+        imported_count = 0
+
+        if req.files:
+            # Create import task, parse files, dedup, save leads
+            from app.services.lead_service import create_leads_from_files
+
+            files_data = [{"filename": f.filename, "data": f.data} for f in req.files]
+            source_task_id, imported_count = await create_leads_from_files(db, user_id, files_data)
+
+        params = {
+            "language": req.language,
+            "lead_count": imported_count or req.num,
+            "lead_ids": req.lead_ids,
+            "source_task_id": source_task_id,
+            # files are pre-processed — do NOT pass to pipeline
+        }
+        result = await chat_service.start_email_craft_pipeline(params, db, user_id)
+    elif confirm_type == "email_blast":
+        if not req.lead_ids:
+            raise HTTPException(400, "请先在「客户名单」选择要发送的客户。")
+
+        params = {
+            "lead_ids": req.lead_ids,
+            "delay_min": req.delay_min,
+            "delay_max": req.delay_max,
+            "daily_limit": req.daily_limit,
+            "dry_run": req.dry_run,
+            "send_mode": req.send_mode,
+        }
+        result = await chat_service.start_email_blast_pipeline(params, db, user_id)
+    else:
+        # customer_acquisition
+        params = {
+            "industry": req.industry,
+            "country": req.country,
+            "keywords": req.keywords,
+            "num": req.num,
+        }
+        result = await chat_service.start_pipeline(params, db, user_id)
 
     return StreamingResponse(
-        chat_service.stream_task_progress(result["task_id"], db),
+        chat_service.stream_task_progress(result["task_id"], db, conversation_id=req.conversation_id),
         media_type="text/event-stream",
         headers=chat_service.SSE_HEADERS,
     )

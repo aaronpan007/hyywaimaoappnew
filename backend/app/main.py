@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import async_session_factory
-from app.routers import chat, settings as settings_router, tasks, leads, profile, emails
+from app.routers import chat, settings as settings_router, tasks, leads, profile, emails, conversations
 from app.services import task_manager
 
 
@@ -37,6 +37,7 @@ app.include_router(tasks.router, prefix="/api")
 app.include_router(leads.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
 app.include_router(emails.router, prefix="/api")
+app.include_router(conversations.router, prefix="/api")
 
 
 @app.get("/health")

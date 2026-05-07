@@ -13,6 +13,29 @@ interface WelcomeScreenProps {
 }
 
 export default function WelcomeScreen({ onSend, onCreateChat, isLoading = false, disabled = false }: WelcomeScreenProps) {
+  const featureText: Record<string, { title: string; description: string; prompt: string }> = {
+    building2: {
+      title: "公司画像",
+      description: "建立自己的公司能力档案",
+      prompt: "帮我建立一个公司画像",
+    },
+    search: {
+      title: "客户搜索",
+      description: "按行业和国家寻找潜在客户",
+      prompt: "帮我找一批目标客户",
+    },
+    "pen-line": {
+      title: "开发信撰写",
+      description: "AI 生成个性化开发信",
+      prompt: "帮我给客户写开发信",
+    },
+    send: {
+      title: "批量发送",
+      description: "批量发送开发信并追踪",
+      prompt: "把写好的邮件发出去",
+    },
+  };
+
   return (
     <div className="flex flex-col h-full">
       {isLoading && (
@@ -39,9 +62,9 @@ export default function WelcomeScreen({ onSend, onCreateChat, isLoading = false,
             {featureCards.map((card, i) => (
               <FeatureCard
                 key={card.title}
-                data={card}
+                data={{ ...card, ...(featureText[card.icon] || {}) }}
                 index={i}
-                onClick={() => onCreateChat(card.title)}
+                onClick={() => onCreateChat((featureText[card.icon] || card).title)}
               />
             ))}
           </div>
@@ -56,7 +79,11 @@ export default function WelcomeScreen({ onSend, onCreateChat, isLoading = false,
       </div>
 
       {/* Input */}
-      <ChatInput onSend={onSend} disabled={disabled} />
+      <ChatInput
+        onSend={onSend}
+        disabled={disabled}
+        placeholder="告诉我你想完成什么外贸任务..."
+      />
       </>}
     </div>
   );

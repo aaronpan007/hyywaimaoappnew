@@ -4,14 +4,23 @@ import React, { useState, useCallback, useEffect, useRef } from "react";
 import Sidebar from "@/components/sidebar";
 import ChatArea from "@/components/chat-area";
 import LeadsTableModal from "@/components/leads-table-modal";
+import AuthScreen from "@/components/auth-screen";
+import { authClient } from "@/lib/auth-client";
 import {
   getSettings,
   updateSettings,
   getProfile,
+  exportProfileDocx,
   exportLeadsExcel,
+  exportEmailsExcel,
   streamChat,
   startConfirmedPipeline,
   stopTask,
+  getConversations,
+  getConversationMessages,
+} from "@/lib/api";
+import type {
+  ConversationMessageResponse,
 } from "@/lib/api";
 import type {
   PageView,
@@ -21,9 +30,15 @@ import type {
   EmailSettings,
   CalloutData,
   TimelineStep,
+  ConfirmParamsData,
 } from "@/types";
 
 export default function Home() {
+  const {
+    data: authSession,
+    isPending: isAuthPending,
+    refetch: refetchAuthSession,
+  } = authClient.useSession();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeNav, setActiveNav] = useState<NavItem>("new-chat");
@@ -31,6 +46,8 @@ export default function Home() {
   const [companyProfile, setCompanyProfile] = useState<any>(null);
   const [emailSettings, setEmailSettings] = useState<EmailSettings | null>(null);
   const [showLeadsModal, setShowLeadsModal] = useState(false);
+  const [leadsModalTaskId, setLeadsModalTaskId] = useState<number | null>(null);
+  const [leadsModalMode, setLeadsModalMode] = useState<"leads" | "emails">("leads");
   const [isLoading, setIsLoading] = useState(true);
 
   const streamingSessionRef = useRef<string | null>(null);
@@ -49,11 +66,34 @@ export default function Home() {
     return session?.messages ?? [];
   }, [activeSessionId, sessions]);
 
-  const chatHistory = sessions.map((s) => ({
-    id: s.id,
-    title: s.title,
-    timestamp: "刚刚",
-  }));
+  const getActiveSession = useCallback((): ChatSession | undefined => {
+    if (!activeSessionId) return undefined;
+    return sessions.find((s) => s.id === activeSessionId);
+  }, [activeSessionId, sessions]);
+
+  const getInputPlaceholder = useCallback(() => {
+    const mode = getActiveSession()?.mode;
+    if (mode === "company-profile") {
+      return "请输入公司官网、主营产品、优势、案例，或上传产品册/公司介绍...";
+    }
+    if (mode === "customer-acquisition") {
+      return "告诉我你想找什么样的客户...";
+    }
+    if (mode === "email-craft") {
+      return "告诉我你想写什么样的开发信，或上传客户资料...";
+    }
+    return "告诉我你想完成什么外贸任务...";
+  }, [getActiveSession]);
+
+  const chatHistory = sessions.map((s) => {
+    // Use last message timestamp for display
+    const lastMsg = s.messages[s.messages.length - 1];
+    return {
+      id: s.id,
+      title: s.title,
+      timestamp: lastMsg?.timestamp || "刚刚",
+    };
+  });
 
   // ─── Session helpers (using functional setState to avoid stale closures) ──
   const updateSessionMessages = useCallback(
@@ -61,6 +101,17 @@ export default function Home() {
       setSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId ? { ...s, messages: updater(s.messages) } : s
+        )
+      );
+    },
+    []
+  );
+
+  const updateSessionDbId = useCallback(
+    (sessionId: string, dbId: number) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId && !s.dbId ? { ...s, dbId } : s
         )
       );
     },
@@ -78,22 +129,33 @@ export default function Home() {
 
   // ─── Initial data loading ────────────────────────────────────────
   useEffect(() => {
+    if (!authSession) {
+      setIsLoading(false);
+      return;
+    }
+
     async function loadInitialData() {
+      setIsLoading(true);
+      // Load each data source independently so one failure doesn't block others
+      try { const s = await getSettings(); setEmailSettings(s); } catch (e) { console.warn("Failed to load settings:", e); }
+      try { const p = await getProfile(); setCompanyProfile(p); } catch (e) { console.warn("Failed to load profile:", e); }
       try {
-        const [settings, profile] = await Promise.all([
-          getSettings(),
-          getProfile(),
-        ]);
-        setEmailSettings(settings);
-        setCompanyProfile(profile);
-      } catch (err) {
-        console.error("Failed to load initial data:", err);
-      } finally {
-        setIsLoading(false);
+        const conversations = await getConversations();
+        const loaded: ChatSession[] = conversations.map((c) => ({
+          id: String(c.id),
+          title: c.title,
+          mode: c.mode as ChatSession["mode"],
+          messages: [],
+          dbId: c.id,
+        }));
+        setSessions(loaded);
+      } catch (e) {
+        console.warn("Failed to load conversations:", e);
       }
+      setIsLoading(false);
     }
     loadInitialData();
-  }, []);
+  }, [authSession?.user?.id]);
 
   // ─── Navigation handler ──────────────────────────────────────────
   const handleNavChange = useCallback(
@@ -110,6 +172,9 @@ export default function Home() {
           break;
         case "company-profile":
           setView("company-profile");
+          break;
+        case "customer-list":
+          setView("customer-list");
           break;
         case "email-config":
           setView("email-config");
@@ -129,10 +194,47 @@ export default function Home() {
   const handleCreateSession = useCallback(
     (title?: string) => {
       const id = `session-${Date.now()}`;
+      const isProfile = title === "公司画像" || Boolean(title?.includes("画像"));
+      const isSupplement = title === "补充资料";
+      const isCustomerSearch = title === "客户搜索" || Boolean(title?.includes("客户"));
+      const isEmailCraft = title === "开发信撰写" || Boolean(title?.includes("开发信"));
+      let initialMessages: ChatMessage[] = [];
+      if (isProfile) {
+        initialMessages = [
+          {
+            id: `profile-guide-${Date.now()}`,
+            role: "assistant",
+            content:
+              "我来帮您建立公司画像。请先提供这些信息中的任意几项：\n\n1. 公司全称或品牌名\n2. 官网 URL\n3. 主营产品/服务\n4. 核心优势、资质认证、合作模式\n5. 典型案例、产品册、公司介绍文件\n\n您可以直接粘贴官网，也可以点击输入框左侧的附件按钮上传资料。",
+            timestamp: "刚刚",
+          },
+        ];
+      } else if (isSupplement) {
+        initialMessages = [
+          {
+            id: `supplement-guide-${Date.now()}`,
+            role: "assistant",
+            content:
+              "好的，您想对公司画像进行补充或修改。请告诉我您想补充的内容，例如：\n\n1. 补充新的产品或服务线\n2. 更新核心优势或资质认证\n3. 添加更多成功案例\n4. 修正已有信息中的错误\n5. 补充目标客户类型或合作模式\n\n您可以直接输入文字描述，也可以上传相关文件。",
+            timestamp: "刚刚",
+          },
+        ];
+      } else if (isEmailCraft) {
+        initialMessages = [
+          {
+            id: `emailcraft-guide-${Date.now()}`,
+            role: "assistant",
+            content:
+              "我来帮您撰写开发信。系统将根据您的公司画像和客户线索，为每位客户生成个性化的开发信。\n\n您可以直接说\"帮我写开发信\"，也可以上传客户资料（Excel/CSV）来补充线索。",
+            timestamp: "刚刚",
+          },
+        ];
+      }
       const newSession: ChatSession = {
         id,
         title: title ?? "新聊天",
-        messages: [],
+        mode: isProfile || isSupplement ? "company-profile" : isEmailCraft ? "email-craft" : isCustomerSearch ? "customer-acquisition" : "general",
+        messages: initialMessages,
       };
       setSessions((prev) => [newSession, ...prev]);
       setActiveSessionId(id);
@@ -168,6 +270,36 @@ export default function Home() {
         abortRef.current?.abort();
         abortRef.current = null;
         currentTaskIdRef.current = null;
+      }
+      // Load messages from DB if not yet loaded
+      if (session?.dbId && session.messages.length === 0) {
+        getConversationMessages(session.dbId).then((msgs) => {
+          const chatMessages: ChatMessage[] = msgs.map((m: ConversationMessageResponse) => {
+            const msg: ChatMessage = {
+              id: `db-${m.id}`,
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              timestamp: new Date(m.createdAt).toLocaleString("zh-CN"),
+            };
+            if (m.extraData) {
+              if (m.messageType === "callout") {
+                msg.callout = m.extraData as unknown as CalloutData;
+              } else if (m.messageType === "timeline") {
+                msg.timeline = m.extraData as any;
+              } else if (m.messageType === "confirm_params") {
+                msg.confirmParams = m.extraData as unknown as ConfirmParamsData;
+              } else if (m.messageType === "confirm_email_craft") {
+                msg.confirmParams = m.extraData as unknown as ConfirmParamsData;
+              }
+            }
+            return msg;
+          });
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === sessionId ? { ...s, messages: chatMessages } : s
+            )
+          );
+        }).catch(() => undefined);
       }
     },
     [sessions]
@@ -219,6 +351,29 @@ export default function Home() {
           return {
             ...m,
             timeline: { ...m.timeline!, steps: newSteps },
+          };
+        })
+      );
+    },
+    [updateSessionMessages]
+  );
+
+  const completeTimeline = useCallback(
+    (sessionId: string, timelineMsgId: string) => {
+      updateSessionMessages(sessionId, (prev) =>
+        prev.map((m) => {
+          if (m.id !== timelineMsgId || !m.timeline) return m;
+          return {
+            ...m,
+            timeline: {
+              ...m.timeline,
+              status: "completed",
+              steps: m.timeline.steps.map((step) =>
+                step.status === "running"
+                  ? { ...step, status: "completed", progress: 100 }
+                  : step
+              ),
+            },
           };
         })
       );
@@ -375,9 +530,10 @@ export default function Home() {
 
       const timelineMsgIdRef = { current: null as string | null };
       const pipelineHandlers = getPipelineHandlers(sessionId, timelineMsgIdRef);
+      const existingDbId = sessions.find((s) => s.id === sessionId)?.dbId;
 
       await startConfirmedPipeline(
-        params,
+        { ...params, conversationId: existingDbId },
         {
           ...pipelineHandlers,
           onResult: (data) => {
@@ -385,15 +541,10 @@ export default function Home() {
               calloutDataRef.current = data.callout;
             }
           },
-          onDone: () => {
+          onDone: (doneData) => {
             const tlId = timelineMsgIdRef.current;
             if (tlId) {
-              updateSessionMessages(sessionId, (prev) =>
-                prev.map((m) => {
-                  if (m.id !== tlId || !m.timeline) return m;
-                  return { ...m, timeline: { ...m.timeline, status: "completed" } };
-                })
-              );
+              completeTimeline(sessionId, tlId);
             }
             const callout = calloutDataRef.current;
             if (callout) {
@@ -408,6 +559,9 @@ export default function Home() {
                 },
               ]);
             }
+            if (doneData.conversationId) {
+              updateSessionDbId(sessionId, doneData.conversationId);
+            }
             isStreamingRef.current = false;
             streamingSessionRef.current = null;
             currentTaskIdRef.current = null;
@@ -417,7 +571,7 @@ export default function Home() {
         controller.signal
       );
     },
-    [updateMessage, getPipelineHandlers]
+    [updateMessage, getPipelineHandlers, completeTimeline, sessions]
   );
 
   // ─── Cancel confirm handler ──────────────────────────────────────
@@ -433,8 +587,81 @@ export default function Home() {
 
   // ─── Send message handler (SSE streaming) ────────────────────────
   const handleSendMessage = useCallback(
-    async (message: string) => {
+    async (message: string, files?: File[], _skipGuard?: boolean) => {
       if (isStreamingRef.current) return;
+      if (
+        !_skipGuard &&
+        view === "company-profile" &&
+        (!files || files.length === 0) &&
+        (message.includes("公司画像") || message.includes("敾鍍"))
+      ) {
+        handleCreateSession("公司画像");
+        return;
+      }
+      const attachments = (files || []).map((file) => ({
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      }));
+
+      // Read image files as base64 for the backend to process with vision model
+      // Resize to max 1200px on longest side to reduce upload size
+      let imageBase64List: string[] = [];
+      let backendFiles: { filename: string; data: string }[] | undefined;
+      let backendMessage = message;
+      if (files && files.length > 0) {
+        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+        const nonImageFiles = files.filter((f) => !f.type.startsWith("image/"));
+        if (imageFiles.length > 0) {
+          imageBase64List = await Promise.all(
+            imageFiles.map(
+              (file) =>
+                new Promise<string>((resolve) => {
+                  const img = new Image();
+                  img.onload = () => {
+                    const MAX_DIM = 1200;
+                    let w = img.width;
+                    let h = img.height;
+                    if (w > MAX_DIM || h > MAX_DIM) {
+                      const scale = MAX_DIM / Math.max(w, h);
+                      w = Math.round(w * scale);
+                      h = Math.round(h * scale);
+                    }
+                    const canvas = document.createElement("canvas");
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext("2d");
+                    ctx?.drawImage(img, 0, 0, w, h);
+                    const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+                    resolve(dataUrl.split(",")[1] || "");
+                  };
+                  img.src = URL.createObjectURL(file);
+                })
+            )
+          );
+        }
+        if (nonImageFiles.length > 0) {
+          // Read non-image files as base64 for the backend
+          backendFiles = await Promise.all(
+            nonImageFiles.map(
+              (file) =>
+                new Promise<{ filename: string; data: string }>((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const base64 = (reader.result as string).split(",")[1] || "";
+                    resolve({ filename: file.name, data: base64 });
+                  };
+                  reader.readAsDataURL(file);
+                })
+            )
+          );
+          backendMessage = message || "帮我写开发信";
+        } else {
+          backendMessage = message;
+        }
+      } else {
+        backendMessage = message;
+      }
 
       // Ensure we have an active session
       let sid = activeSessionId;
@@ -444,6 +671,7 @@ export default function Home() {
         const newSession: ChatSession = {
           id,
           title: "新聊天",
+          mode: "general",
           messages: [],
         };
         setSessions((prev) => [newSession, ...prev]);
@@ -453,11 +681,15 @@ export default function Home() {
 
       const sessionId = sid; // capture for closures
 
+      // Get existing DB conversation ID for this session
+      const existingDbId = sessions.find((s) => s.id === sid)?.dbId;
+
       // Add user message
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
         content: message,
+        attachments,
       };
 
       // Add thinking placeholder
@@ -498,9 +730,10 @@ export default function Home() {
 
       let timelineMsgId: string | null = null;
       let confirmMsgId: string | null = null;
+      let pipelineType: string | null = null;
 
       await streamChat(
-        message,
+        backendMessage,
         {
           onThinking: () => {
             updateMessage(sessionId, thinkingId, { content: "正在分析您的需求..." });
@@ -550,6 +783,7 @@ export default function Home() {
           onPipelineStarted: (data) => {
             const tlId = `timeline-${Date.now()}`;
             timelineMsgId = tlId;
+            pipelineType = data.type;
             currentTaskIdRef.current = data.taskId;
             updateSessionMessages(sessionId, (prev) => [
               ...prev,
@@ -611,17 +845,19 @@ export default function Home() {
             });
           },
 
-          onDone: () => {
+          onDone: (doneData) => {
             if (timelineMsgId) {
-              updateSessionMessages(sessionId, (prev) =>
-                prev.map((m) => {
-                  if (m.id !== timelineMsgId || !m.timeline) return m;
-                  return {
-                    ...m,
-                    timeline: { ...m.timeline, status: "completed" },
-                  };
-                })
-              );
+              completeTimeline(sessionId, timelineMsgId);
+            }
+
+            if (pipelineType === "company-profile") {
+              getProfile().then(setCompanyProfile).catch(() => undefined);
+              getSettings().then(setEmailSettings).catch(() => undefined);
+            }
+
+            // Save conversation DB id when received
+            if (doneData.conversationId) {
+              updateSessionDbId(sessionId, doneData.conversationId);
             }
 
             const callout = calloutDataRef.current;
@@ -699,33 +935,69 @@ export default function Home() {
             setSessions((prev) => [...prev]);
           },
         },
-        controller.signal
+        controller.signal,
+        imageBase64List.length > 0 ? imageBase64List : undefined,
+        backendFiles,
+        existingDbId
       );
     },
-    [activeSessionId, updateMessage, updateTimelineStep, updateSessionMessages]
+    [activeSessionId, handleCreateSession, updateMessage, updateTimelineStep, updateSessionMessages, completeTimeline, view]
   );
 
   // ─── Other handlers ──────────────────────────────────────────────
-  const handleViewList = useCallback(() => setShowLeadsModal(true), []);
+  const handleViewList = useCallback((taskId?: number) => {
+    setLeadsModalTaskId(taskId ?? null);
+    setLeadsModalMode("leads");
+    setShowLeadsModal(true);
+  }, []);
 
-  const handleDownloadExcel = useCallback(async () => {
+  const handleDownloadExcel = useCallback(async (taskId?: number) => {
     try {
-      await exportLeadsExcel();
+      await exportLeadsExcel({ taskId });
     } catch {
       alert("Excel 导出失败，请重试");
     }
   }, []);
 
+  const handleDownloadEmails = useCallback(async (taskId?: number) => {
+    try {
+      await exportEmailsExcel(taskId);
+    } catch {
+      alert("邮件 Excel 导出失败，请重试");
+    }
+  }, []);
+
+  const handleViewProfile = useCallback(async () => {
+    const profile = await getProfile();
+    setCompanyProfile(profile);
+    setView("company-profile");
+    setActiveNav("company-profile");
+  }, []);
+
+  const handleViewEmails = useCallback((taskId?: number) => {
+    setLeadsModalTaskId(taskId ?? null);
+    setLeadsModalMode("emails");
+    setShowLeadsModal(true);
+  }, []);
+
   const handleStartCollect = useCallback(() => {
-    handleSendMessage("帮我建立一个公司画像");
+    handleSendMessage("帮我建立一个公司画像", undefined, true);
   }, [handleSendMessage]);
+
+  const handleSupplement = useCallback(() => {
+    handleCreateSession("补充资料");
+  }, [handleCreateSession]);
 
   const handleRecollect = useCallback(() => {
-    handleSendMessage("帮我建立一个公司画像");
+    handleSendMessage("帮我重新采集并更新公司画像", undefined, true);
   }, [handleSendMessage]);
 
-  const handleExportProfile = useCallback(() => {
-    alert("画像导出功能将在后续版本中启用");
+  const handleExportProfile = useCallback(async () => {
+    try {
+      await exportProfileDocx();
+    } catch {
+      alert("画像导出失败，请确认已经生成公司画像后重试");
+    }
   }, []);
 
   const handleSaveEmailSettings = useCallback(
@@ -745,13 +1017,116 @@ export default function Home() {
 
   // ─── Props for confirm params card (via ChatArea → MessageList → MessageBubble) ──
   const onConfirmParamsProp = useCallback(
-    (params: { industry: string; country: string; keywords: string[]; num: number }) => {
+    (params: { industry: string; country: string; keywords: string[]; num: number; confirmType?: string; leadCount?: number; language?: string }) => {
       const pending = pendingConfirmRef.current;
       if (!pending) return;
+
+      // Dispatch by confirm type
+      if (params.confirmType === "email_craft") {
+        pendingConfirmRef.current = null;
+        handleConfirmEmailCraft(pending.confirmMsgId, pending.sessionId, params);
+        return;
+      }
+
       pendingConfirmRef.current = null;
       handleConfirmParams(pending.confirmMsgId, pending.sessionId, params);
     },
     [handleConfirmParams]
+  );
+
+  // ─── Email-craft confirm handler ──────────────────────────────────
+  const handleConfirmEmailCraft = useCallback(
+    async (
+      confirmMsgId: string,
+      sessionId: string,
+      params: { leadCount?: number; language?: string },
+      files?: { filename: string; data: string }[]
+    ) => {
+      updateMessage(sessionId, confirmMsgId, {
+        content: "正在启动开发信生成...",
+        confirmParams: undefined,
+      });
+
+      isStreamingRef.current = true;
+      streamingSessionRef.current = sessionId;
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const timelineMsgIdRef = { current: null as string | null };
+      const pipelineHandlers = getPipelineHandlers(sessionId, timelineMsgIdRef);
+      const existingDbId = sessions.find((s) => s.id === sessionId)?.dbId;
+
+      await startConfirmedPipeline(
+        {
+          confirmType: "email_craft",
+          language: params.language || "en",
+          num: params.leadCount || 0,
+          files,
+          conversationId: existingDbId,
+        },
+        {
+          ...pipelineHandlers,
+          onResult: (data) => {
+            if (data.callout) {
+              calloutDataRef.current = data.callout;
+            }
+          },
+          onDone: (doneData) => {
+            const tlId = timelineMsgIdRef.current;
+            if (tlId) {
+              completeTimeline(sessionId, tlId);
+            }
+            const callout = calloutDataRef.current;
+            if (callout) {
+              updateSessionMessages(sessionId, (prev) => [
+                ...prev,
+                {
+                  id: `callout-${Date.now()}`,
+                  role: "assistant",
+                  content: "",
+                  timestamp: "刚刚",
+                  callout: callout as CalloutData,
+                },
+              ]);
+            }
+            if (doneData.conversationId) {
+              updateSessionDbId(sessionId, doneData.conversationId);
+            }
+            isStreamingRef.current = false;
+            streamingSessionRef.current = null;
+            currentTaskIdRef.current = null;
+            setSessions((prev) => [...prev]);
+          },
+        },
+        controller.signal
+      );
+    },
+    [updateMessage, getPipelineHandlers, completeTimeline, sessions]
+  );
+
+  // ─── Email-craft confirm from card (with optional uploaded files) ──
+  const onConfirmEmailCraftProp = useCallback(
+    (files?: { filename: string; data: string }[]) => {
+      const pending = pendingConfirmRef.current;
+      if (!pending) return;
+      // Get the confirm data from the message
+      const session = sessions.find((s) => s.id === pending.sessionId);
+      const msg = session?.messages.find((m) => m.id === pending.confirmMsgId);
+      const confirmData = msg?.confirmParams as any;
+      pendingConfirmRef.current = null;
+      handleConfirmEmailCraft(
+        pending.confirmMsgId,
+        pending.sessionId,
+        {
+          leadCount: confirmData?.leadCount || confirmData?.num || 0,
+          language: confirmData?.language || "en",
+        },
+        files
+      );
+    },
+    [sessions, handleConfirmEmailCraft]
   );
 
   const onCancelConfirmProp = useCallback(() => {
@@ -761,6 +1136,218 @@ export default function Home() {
     handleCancelConfirm(pending.confirmMsgId, pending.sessionId);
   }, [handleCancelConfirm]);
 
+  // ─── Generate emails from customer list ───────────────────────────
+  const handleGenerateEmailsFromList = useCallback(
+    async (leadIds: number[], language: string = "en") => {
+      if (leadIds.length === 0 || isStreamingRef.current) return;
+
+      const sessionId = `session-${Date.now()}`;
+      const newSession: ChatSession = {
+        id: sessionId,
+        title: `开发信撰写 - ${leadIds.length} 个客户`,
+        mode: "email-craft",
+        messages: [
+          {
+            id: `guide-${Date.now()}`,
+            role: "assistant",
+            content: `正在为选中的 ${leadIds.length} 个客户生成开发信...`,
+            timestamp: "刚刚",
+          },
+        ],
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(sessionId);
+      setView("chat");
+      setActiveNav("new-chat");
+
+      isStreamingRef.current = true;
+      streamingSessionRef.current = sessionId;
+      calloutDataRef.current = null;
+      currentTaskIdRef.current = null;
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const timelineMsgIdRef = { current: null as string | null };
+      const pipelineHandlers = getPipelineHandlers(sessionId, timelineMsgIdRef);
+
+      await startConfirmedPipeline(
+        {
+          confirmType: "email_craft",
+          leadIds,
+          num: leadIds.length,
+          language,
+        },
+        {
+          ...pipelineHandlers,
+          onResult: (data) => {
+            if (data.callout) {
+              calloutDataRef.current = data.callout;
+            }
+          },
+          onDone: (doneData) => {
+            const tlId = timelineMsgIdRef.current;
+            if (tlId) {
+              completeTimeline(sessionId, tlId);
+            }
+            const callout = calloutDataRef.current;
+            if (callout) {
+              updateSessionMessages(sessionId, (prev) => [
+                ...prev,
+                {
+                  id: `callout-${Date.now()}`,
+                  role: "assistant",
+                  content: "",
+                  timestamp: "刚刚",
+                  callout: callout as CalloutData,
+                },
+              ]);
+            }
+            if (doneData.conversationId) {
+              updateSessionDbId(sessionId, doneData.conversationId);
+            }
+            isStreamingRef.current = false;
+            streamingSessionRef.current = null;
+            currentTaskIdRef.current = null;
+            setSessions((prev) => [...prev]);
+          },
+        },
+        controller.signal
+      );
+    },
+    [getPipelineHandlers, updateSessionMessages, completeTimeline]
+  );
+
+  const handleSendEmailsFromList = useCallback(
+    async (
+      leadIds: number[],
+      settings: {
+        delayMin: number;
+        delayMax: number;
+        dailyLimit: number;
+        dryRun: boolean;
+        sendMode: "immediate" | "auto";
+      }
+    ) => {
+      if (leadIds.length === 0 || isStreamingRef.current) return;
+
+      const sessionId = `session-${Date.now()}`;
+      const newSession: ChatSession = {
+        id: sessionId,
+        title: `批量发送 - ${leadIds.length} 个客户`,
+        mode: "email-craft",
+        messages: [
+          {
+            id: `guide-${Date.now()}`,
+            role: "assistant",
+            content: `正在为选中的 ${leadIds.length} 个客户发送开发信...`,
+            timestamp: "刚刚",
+          },
+        ],
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(sessionId);
+      setView("chat");
+      setActiveNav("new-chat");
+
+      isStreamingRef.current = true;
+      streamingSessionRef.current = sessionId;
+      calloutDataRef.current = null;
+      currentTaskIdRef.current = null;
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const timelineMsgIdRef = { current: null as string | null };
+      const pipelineHandlers = getPipelineHandlers(sessionId, timelineMsgIdRef);
+
+      await startConfirmedPipeline(
+        {
+          confirmType: "email_blast",
+          leadIds,
+          num: leadIds.length,
+          delayMin: settings.delayMin,
+          delayMax: settings.delayMax,
+          dailyLimit: settings.dailyLimit,
+          dryRun: false,
+          sendMode: settings.sendMode,
+        },
+        {
+          ...pipelineHandlers,
+          onResult: (data) => {
+            if (data.callout) {
+              calloutDataRef.current = data.callout;
+            }
+          },
+          onDone: (doneData) => {
+            const tlId = timelineMsgIdRef.current;
+            if (tlId) {
+              completeTimeline(sessionId, tlId);
+            }
+            const callout = calloutDataRef.current;
+            if (callout) {
+              updateSessionMessages(sessionId, (prev) => [
+                ...prev,
+                {
+                  id: `callout-${Date.now()}`,
+                  role: "assistant",
+                  content: "",
+                  timestamp: "刚刚",
+                  callout: callout as CalloutData,
+                },
+              ]);
+            }
+            if (doneData.conversationId) {
+              updateSessionDbId(sessionId, doneData.conversationId);
+            }
+            isStreamingRef.current = false;
+            streamingSessionRef.current = null;
+            currentTaskIdRef.current = null;
+            setSessions((prev) => [...prev]);
+          },
+        },
+        controller.signal
+      );
+    },
+    [getPipelineHandlers, updateSessionMessages, completeTimeline]
+  );
+
+  const handleSignOut = useCallback(async () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    streamingSessionRef.current = null;
+    isStreamingRef.current = false;
+    currentTaskIdRef.current = null;
+    pendingConfirmRef.current = null;
+    calloutDataRef.current = null;
+
+    await authClient.signOut();
+    setSessions([]);
+    setActiveSessionId(null);
+    setActiveNav("new-chat");
+    setView("welcome");
+    setCompanyProfile(null);
+    setEmailSettings(null);
+    setShowLeadsModal(false);
+    setLeadsModalTaskId(null);
+    setIsLoading(false);
+    await refetchAuthSession();
+  }, [refetchAuthSession]);
+
+  if (isAuthPending) {
+    return (
+      <main className="flex h-screen w-screen items-center justify-center bg-[#f4f5f2] text-[14px] text-text-secondary">
+        正在加载...
+      </main>
+    );
+  }
+
+  if (!authSession) {
+    return <AuthScreen onAuthenticated={refetchAuthSession} />;
+  }
+
   return (
     <main className="flex h-screen w-screen overflow-hidden bg-surface-white">
       <Sidebar
@@ -769,6 +1356,8 @@ export default function Home() {
         chatHistory={chatHistory}
         activeSessionId={activeSessionId}
         onSelectChat={handleSelectSession}
+        userEmail={authSession.user.email}
+        onSignOut={handleSignOut}
       />
       <div className="flex-1 min-w-0 h-full">
         <ChatArea
@@ -778,24 +1367,37 @@ export default function Home() {
           onCreateChat={handleCreateSession}
           onViewList={handleViewList}
           onDownloadExcel={handleDownloadExcel}
+          onDownloadEmails={handleDownloadEmails}
+          onViewProfile={handleViewProfile}
+          onViewEmails={handleViewEmails}
           onStopTask={handleStopTask}
           onConfirmParams={onConfirmParamsProp}
+          onConfirmEmailCraft={onConfirmEmailCraftProp}
           onCancelConfirm={onCancelConfirmProp}
+          onGoToCustomerList={() => handleNavChange("customer-list")}
           companyProfile={companyProfile}
           emailSettings={emailSettings}
           onBackToChat={handleBackToChat}
-          onStartCollect={handleStartCollect}
-          onRecollect={handleRecollect}
+          onStartCollect={() => handleSendMessage("帮我建立一个公司画像", undefined, true)}
+          onSupplement={() => handleCreateSession("补充资料")}
+          onRecollect={() => handleSendMessage("帮我重新采集并更新公司画像", undefined, true)}
           onExportProfile={handleExportProfile}
           onSaveEmailSettings={handleSaveEmailSettings}
+          onGenerateEmails={handleGenerateEmailsFromList}
+          onGoToEmailConfig={() => handleNavChange("email-config")}
+          onSendEmails={handleSendEmailsFromList}
           isStreaming={isStreaming}
           isLoading={isLoading}
+          inputPlaceholder={getInputPlaceholder()}
+          allowFileUpload={getActiveSession()?.mode === "company-profile" || getActiveSession()?.mode === "email-craft"}
         />
       </div>
 
       <LeadsTableModal
         isOpen={showLeadsModal}
         onClose={() => setShowLeadsModal(false)}
+        taskId={leadsModalTaskId}
+        mode={leadsModalMode}
       />
     </main>
   );

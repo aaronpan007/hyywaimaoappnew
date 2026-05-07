@@ -5,6 +5,8 @@ from app.models.task import Task, TaskLog
 from app.models.lead import Lead
 from app.models.company_profile import CompanyProfile
 from app.models.outreach_email import OutreachEmail
+from app.models.conversation import Conversation, ConversationMessage
+from app.models.auth import AuthAccount, AuthSession, AuthVerification
 
 __all__ = [
     "Base",
@@ -16,4 +18,9 @@ __all__ = [
     "Lead",
     "CompanyProfile",
     "OutreachEmail",
+    "Conversation",
+    "ConversationMessage",
+    "AuthAccount",
+    "AuthSession",
+    "AuthVerification",
 ]

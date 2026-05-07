@@ -27,6 +27,7 @@ from app.database import async_session_factory
 from app.models.lead import Lead
 from app.models.task import Task, TaskLog
 from app.services import task_manager
+from app.utils.contact import clean_contact_name
 from app.utils.scraper import scrape_companies_sync
 
 logger = logging.getLogger(__name__)
@@ -50,15 +51,32 @@ SYSTEM_PROMPT = """你是一位资深的B2B业务分析师，专精于国际市�
 
 {
   "company_name": "公司英文名称（从官网提取）",
-  "country": "公司所在国家/地区",
+  "country": "公司所在国家/地区（如 United States, China, Germany 等）",
   "industry_keywords": ["关键词1", "关键词2", "关键词3"],
   "supply_chain_role": "制造商/批发商/品牌商/服务商/渠道商/其他",
-  "ai_summary": "（完整可读的分析摘要，包含7个要点：公司概况、市场与地区、潜在需求、近期动态、匹配理由、缺失信息、置信度评分）",
-  "business_match_points": "（简洁明确的业务匹配切入点描述，2-4句话）",
+
+  "ai_summary": "（这是一段完整可读的分析摘要，必须包含以下全部7个要点，用编号分段）
+
+【1.公司概况】这家公司是做什么的，主营产品或服务是什么，属于什么行业，处在产业链的什么位置（制造商/批发商/品牌商/服务商/渠道商）。
+
+【2.市场与地区】这家公司服务的市场和区域是什么，是否与用户要求的目标地区匹配。如果目标地区是北美但这家公司主要面向中国国内市场，要明确指出不匹配。
+
+【3.潜在需求】从官网公开信息推断这家公司可能需要什么资源、什么服务、什么供应能力（如原材料采购、OEM代工、海外渠道代理、技术合作等）。
+
+【4.近期动态】这家公司最近有没有动态线索，如新产品发布、参加展会、业务扩张、招聘信息、博客/新闻更新等。这些都可以作为开发信的切入点。如果未发现近期动态，明确说明。
+
+【5.匹配理由】明确说明为什么这家公司值得联系，从行业匹配、地区匹配、产品匹配、潜在合作点等角度分析。如果匹配度低，也要说明原因。
+
+【6.缺失信息】列出分析中缺失的关键信息，如没有找到邮箱、没有明确联系人、没有定价信息、没有明显近期动态等。
+
+【7.置信度评分】给出0-100分的置信度分数，表示对"这是一家值得开发的潜在客户"的信心。100分=非常有价值且信息充分，0分=完全不相关或信息严重不足。",
+
+  "business_match_points": "（简洁明确的业务匹配切入点描述，2-4句话）从价格优势、交期优势、定制能力、过往案例匹配、供应链能力、认证资质等角度分析我司最适合从什么角度切入。这一列决定了后续开发信不会写成泛泛而谈。",
+
   "market_match": "High/Medium/Low",
   "confidence_score": 75,
-  "outreach_suggestion": "开发信切入建议（含邮件主题建议）",
-  "contact_name": "推测的联系人姓名"
+  "outreach_suggestion": "开发信切入建议（含邮件主题建议，要具体、可操作）",
+  "contact_name": "官网明确出现的个人姓名；如果只是部门、职位、团队、邮箱前缀、建议联系对象、信息不足或推测结果，必须填空字符串。不要填写 Sales Team、Overseas Sales、President、信息不足、建议联系... 等非个人姓名内容"
 }"""
 
 
@@ -140,7 +158,7 @@ LinkedIn: {company.get('_linkedin', 'N/A')}
     for attempt in range(3):
         try:
             output = replicate.run(
-                "openai/gpt-5.2",
+                settings.replicate_model,
                 input={
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
@@ -232,6 +250,11 @@ def _clean_company_name(name: str) -> str:
 
 def _merge_ai_fields(company: dict, analysis: dict) -> dict:
     """Merge AI analysis fields into the company dict."""
+    if analysis.get("parse_error"):
+        company["parse_error"] = True
+        company["_ai_error"] = analysis.get("error", "AI response parse failed")
+        return company
+
     ai_name = analysis.get("company_name", "")
     if ai_name:
         company["company_name"] = _clean_company_name(ai_name)
@@ -250,7 +273,7 @@ def _merge_ai_fields(company: dict, analysis: dict) -> dict:
         company["industry"] = str(industry_kw)
 
     company["company_role"] = analysis.get("supply_chain_role", "")
-    company["contact_name"] = analysis.get("contact_name", "")
+    company["contact_name"] = clean_contact_name(analysis.get("contact_name", ""))
     company["ai_summary"] = analysis.get("ai_summary", "")
     company["business_match_points"] = analysis.get("business_match_points", "")
     company["outreach_suggestion"] = analysis.get("outreach_suggestion", "")
@@ -259,6 +282,48 @@ def _merge_ai_fields(company: dict, analysis: dict) -> dict:
     company["_confidence_score"] = analysis.get("confidence_score", 0)
 
     return company
+
+
+def _matches_target_requirements(company: dict, industry: str, target_country: str) -> bool:
+    """Keep only companies that still match the requested country and industry."""
+    if target_country:
+        country_text = " ".join(
+            str(company.get(k, ""))
+            for k in ("country", "_location", "_domain", "website")
+        ).lower()
+        target_country_lower = target_country.lower()
+        country_aliases = {
+            "usa": ["usa", "united states", ".us"],
+            "uk": ["uk", "united kingdom", ".uk"],
+            "japan": ["japan", ".jp"],
+            "south korea": ["south korea", "korea", ".kr"],
+        }
+        aliases = country_aliases.get(target_country_lower, [target_country_lower])
+        if not any(alias in country_text for alias in aliases):
+            return False
+
+    if industry:
+        haystack = " ".join(
+            str(company.get(k, ""))
+            for k in (
+                "company_name",
+                "industry",
+                "_description",
+                "_about_text",
+                "_products_services",
+                "ai_summary",
+                "business_match_points",
+            )
+        ).lower()
+        tokens = [
+            token.lower()
+            for token in re.split(r"[\s,;/|()（）\-]+", industry)
+            if len(token.strip()) >= 3 or re.search(r"[\u4e00-\u9fff]", token)
+        ]
+        if tokens and not any(token in haystack for token in tokens):
+            return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -373,15 +438,37 @@ def _extract_domain(url: str) -> str:
 def _generate_queries(industry: str, country: str, keywords: list[str]) -> list[str]:
     """Generate multiple search query combinations."""
     queries = []
-    roles = keywords if keywords else ["company", "supplier"]
+    role_terms = {
+        "company", "supplier", "manufacturer", "distributor", "wholesaler",
+        "dealer", "importer", "buyer", "agent", "retailer", "trader",
+        "local company",
+    }
+    normalized_keywords = [k.strip() for k in keywords if k and k.strip()]
+    roles = [k for k in normalized_keywords if k.lower() in role_terms]
+    refinements = [k for k in normalized_keywords if k.lower() not in role_terms]
+
+    if not roles:
+        roles = ["company", "supplier", "manufacturer"]
 
     for role in roles:
         queries.append(f"{industry} {role} in {country}")
-        queries.append(f"top {industry} {role} {country}")
-        queries.append(f"best {industry} {role} {country}")
+        if role != "local company":
+            queries.append(f"top {industry} {role} {country}")
+            queries.append(f"best {industry} {role} {country}")
         for suffix in ["manufacturer", "distributor", "wholesaler", "supplier"]:
             if suffix.lower() not in role.lower():
                 queries.append(f"{industry} {suffix} {country}")
+
+    for refinement in refinements:
+        queries.append(f"{industry} {refinement} company in {country}")
+        queries.append(f"{refinement} {industry} manufacturer {country}")
+        queries.append(f"{refinement} {industry} supplier {country}")
+        if "hotel" in refinement.lower():
+            queries.append(f"{industry} for hotels manufacturer {country}")
+
+    if refinements:
+        joined_refinements = " ".join(refinements[:3])
+        queries.append(f"{industry} {joined_refinements} company {country}")
 
     # Deduplicate
     seen: set[str] = set()
@@ -673,6 +760,16 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
             scraped_ok = sum(
                 1 for c in companies if c.get("_scrape_status") != "failed"
             )
+
+            viable = [c for c in companies if c.get("_scrape_status") != "failed"]
+
+            # Post-scrape quality filter: drop companies with no useful content
+            viable = [
+                c for c in viable
+                if c.get("_description") or c.get("_about_text") or c.get("_products_services")
+            ]
+            quality_dropped = scraped_ok - len(viable)
+
             await _update_task_log(
                 db, task_id, step=3,
                 status="completed",
@@ -680,7 +777,6 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                 progress=100,
             )
             # Log quality filter result
-            quality_dropped = scraped_ok - len(viable)
             if quality_dropped > 0:
                 logger.info(
                     "Quality filter dropped %d/%d scraped companies (no useful content)",
@@ -698,13 +794,6 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
             )
 
             profile_data = await _load_profile(db, user_id)
-            viable = [c for c in companies if c.get("_scrape_status") != "failed"]
-
-            # Post-scrape quality filter: drop companies with no useful content
-            viable = [
-                c for c in viable
-                if c.get("_description") or c.get("_about_text") or c.get("_products_services")
-            ]
 
             if not viable:
                 await _update_task_log(
@@ -737,18 +826,25 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
 
                     task_manager.update_heartbeat(task_id)
 
+                analyzed_ok = [
+                    c for c in viable
+                    if not c.get("parse_error")
+                    and _matches_target_requirements(
+                        c,
+                        params.get("industry", ""),
+                        params.get("country", ""),
+                    )
+                    and (c.get("ai_summary") or c.get("business_match_points") or c.get("outreach_suggestion"))
+                ]
+
                 await _update_task_log(
                     db, task_id, step=4,
                     status="completed",
-                    message=f"AI 分析完成 {len(analyzed_ok)}/{len(viable)} 家（{len(viable) - len(analyzed_ok)} 家解析失败）",
+                    message=f"AI 分析完成 {len(analyzed_ok)}/{len(viable)} 家合格客户",
                     progress=100,
                 )
                 task_manager.update_heartbeat(task_id)
 
-                # --- Filter out AI parse errors, then rank ---
-                analyzed_ok = [
-                    c for c in viable if not c.get("parse_error")
-                ]
                 ranked = _filter_and_rank(analyzed_ok, params.get("num", 20), params.get("country", ""))
 
             # --- Step 5: Save to DB ---

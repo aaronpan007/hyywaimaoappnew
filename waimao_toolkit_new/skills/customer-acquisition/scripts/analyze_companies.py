@@ -54,7 +54,7 @@ SYSTEM_PROMPT = """你是一位资深的B2B业务分析师，专精于国际市�
   "market_match": "High/Medium/Low",
   "confidence_score": 75,
   "outreach_suggestion": "开发信切入建议（含邮件主题建议，要具体、可操作）",
-  "contact_name": "推测的联系人姓名（如无法判断填空字符串）"
+  "contact_name": "官网明确出现的个人姓名；如果只是部门、职位、团队、邮箱前缀、建议联系对象、信息不足或推测结果，必须填空字符串。不要填写 Sales Team、Overseas Sales、President、信息不足、建议联系... 等非个人姓名内容"
 }"""
 
 
@@ -229,6 +229,72 @@ def parse_ai_response(response_text):
     return None
 
 
+def clean_contact_name(value):
+    """Keep contact_name conservative: only explicit individual names survive."""
+    if not value:
+        return ""
+
+    name = str(value).strip()
+    if not name:
+        return ""
+
+    # Convert "Toru Yamazaki (President)" to "Toru Yamazaki"; title-only
+    # values are still rejected by the keyword checks below.
+    name = re.sub(r"\s*[（(][^（）()]*[）)]\s*$", "", name).strip()
+    lowered = name.lower()
+    invalid_text = [
+        "info",
+        "sales",
+        "support",
+        "contact",
+        "team",
+        "department",
+        "dept",
+        "office",
+        "service",
+        "customer",
+        "marketing",
+        "overseas",
+        "general",
+        "admin",
+        "company",
+        "manager",
+        "director",
+        "president",
+        "ceo",
+        "unknown",
+        "not available",
+        "not found",
+        "n/a",
+        "none",
+        "信息不足",
+        "无法",
+        "建议",
+        "联系",
+        "部门",
+        "团队",
+        "销售",
+        "采购",
+        "负责人",
+        "邮箱",
+    ]
+    if any(token in lowered for token in invalid_text):
+        return ""
+
+    if "@" in name or "http" in name.lower():
+        return ""
+    if re.search(r"[/\\|;；、]", name):
+        return ""
+    if re.search(r"\d", name):
+        return ""
+    if len(name) > 40:
+        return ""
+    if re.fullmatch(r"[A-Z]{3,}", name):
+        return ""
+
+    return name
+
+
 def analyze_single_company(company, my_company, my_products, max_retries=2, profile=None):
     """Analyze a single company using Replicate API. Returns merged data dict."""
     user_prompt = build_user_prompt(company, my_company, my_products, profile=profile)
@@ -302,7 +368,7 @@ def merge_ai_fields(company, analysis):
 
     # Other AI fields
     company["company_role"] = analysis.get("supply_chain_role", "")
-    company["contact_name"] = analysis.get("contact_name", "")
+    company["contact_name"] = clean_contact_name(analysis.get("contact_name", ""))
     company["ai_summary"] = analysis.get("ai_summary", "")
     company["business_match_points"] = analysis.get("business_match_points", "")
     company["outreach_content"] = analysis.get("outreach_suggestion", "")

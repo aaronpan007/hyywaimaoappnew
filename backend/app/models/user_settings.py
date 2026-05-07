@@ -15,6 +15,7 @@ class UserSettings(Base):
     profile_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("company_profiles.id"), nullable=True
     )
+    confirmed_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

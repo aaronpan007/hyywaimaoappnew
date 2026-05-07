@@ -90,6 +90,9 @@ PAGE_PATTERNS = {
     "cases": [
         "cases", "case-studies", "case-study", "projects", "project",
         "portfolio", "work", "clients", "testimonials", "success-stories",
+        "project-gallery", "gallery", "applications", "application",
+        "reference", "references", "installations", "installation",
+        "customer-story", "customer-stories", "our-work", "special",
         "案例", "成功案例", "项目案例", "客户案例", "工程案例"
     ],
     "contact": [
@@ -165,6 +168,31 @@ def find_sub_links_from_html(soup, base_url: str, max_links: int) -> list:
             if len(unique_links) >= max_links:
                 break
     return unique_links
+
+
+def score_case_link(url: str) -> int:
+    """Rank links that are more likely to be real case/project detail pages."""
+    value = url.lower()
+    strong = [
+        "case", "project", "portfolio", "gallery", "application",
+        "reference", "installation", "customer", "success", "special",
+    ]
+    weak = ["product", "solution", "service", "work"]
+    score = 0
+    for token in strong:
+        if token in value:
+            score += 3
+    for token in weak:
+        if token in value:
+            score += 1
+    if re.search(r"/\d{4}/|-\d+\.|_\d+\.", value):
+        score += 1
+    return score
+
+
+def prioritize_case_links(links: list) -> list:
+    """Put likely case/project detail pages first without dropping fallback links."""
+    return sorted(links, key=lambda item: score_case_link(item), reverse=True)
 
 
 # ============ Playwright mode ============
@@ -293,7 +321,12 @@ def scrape_website_playwright(url: str, max_pages: int = 15, extra_pages: list =
 
                     if category in ("products", "cases") and pages_scraped < max_pages:
                         sub_links = find_sub_links_pw(page, link_url, max_pages - pages_scraped)
-                        for sub_url in sub_links[:3]:
+                        if category == "cases":
+                            sub_links = prioritize_case_links(sub_links)
+                            detail_limit = max_pages - pages_scraped
+                        else:
+                            detail_limit = min(3, max_pages - pages_scraped)
+                        for sub_url in sub_links[:detail_limit]:
                             print(f"    抓取子页面: {sub_url}")
                             try:
                                 page.goto(sub_url, timeout=15000)
@@ -405,7 +438,12 @@ def scrape_website_requests(url: str, max_pages: int = 15, extra_pages: list = N
                 if category in ("products", "cases") and pages_scraped < max_pages:
                     soup2 = BeautifulSoup(resp2.text, 'html.parser')
                     sub_links = find_sub_links_from_html(soup2, link_url, max_pages - pages_scraped)
-                    for sub_url in sub_links[:3]:
+                    if category == "cases":
+                        sub_links = prioritize_case_links(sub_links)
+                        detail_limit = max_pages - pages_scraped
+                    else:
+                        detail_limit = min(3, max_pages - pages_scraped)
+                    for sub_url in sub_links[:detail_limit]:
                         print(f"    抓取子页面: {sub_url}")
                         try:
                             resp3 = session.get(sub_url, timeout=15)

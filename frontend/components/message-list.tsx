@@ -6,16 +6,24 @@ import MessageBubble from "./message-bubble";
 
 interface MessageListProps {
   messages: ChatMessage[];
-  onViewList?: () => void;
-  onDownloadExcel?: () => void;
+  onViewList?: (taskId?: number) => void;
+  onDownloadExcel?: (taskId?: number) => void;
+  onDownloadEmails?: (taskId?: number) => void;
+  onViewProfile?: () => void;
+  onViewEmails?: (taskId?: number) => void;
   onStopTask?: () => void;
   onConfirmParams?: (params: {
     industry: string;
     country: string;
     keywords: string[];
     num: number;
+    confirmType?: string;
+    leadCount?: number;
+    language?: string;
   }) => void;
+  onConfirmEmailCraft?: (files?: { filename: string; data: string }[]) => void;
   onCancelConfirm?: () => void;
+  onGoToCustomerList?: () => void;
   isStreaming?: boolean;
 }
 
@@ -23,9 +31,14 @@ export default function MessageList({
   messages,
   onViewList,
   onDownloadExcel,
+  onDownloadEmails,
+  onViewProfile,
+  onViewEmails,
   onStopTask,
   onConfirmParams,
+  onConfirmEmailCraft,
   onCancelConfirm,
+  onGoToCustomerList,
   isStreaming = false,
 }: MessageListProps) {
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -45,9 +58,14 @@ export default function MessageList({
             message={msg}
             onViewList={onViewList}
             onDownloadExcel={onDownloadExcel}
+            onDownloadEmails={onDownloadEmails}
+            onViewProfile={onViewProfile}
+            onViewEmails={onViewEmails}
             onStopTask={onStopTask}
             onConfirmParams={onConfirmParams}
+            onConfirmEmailCraft={onConfirmEmailCraft}
             onCancelConfirm={onCancelConfirm}
+            onGoToCustomerList={onGoToCustomerList}
           />
         ))}
       </div>

@@ -1196,6 +1196,9 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/waimao
 
 # AI / LLM
 REPLICATE_API_TOKEN=r8_xxx
+# 测试阶段默认使用 Replicate openai/gpt-4.1-nano，降低调试成本；
+# 生产质量生成时可一键改回 openai/gpt-5.2。
+REPLICATE_MODEL=openai/gpt-4.1-nano
 
 # 搜索
 SERPER_API_KEY=xxx
@@ -1247,3 +1250,124 @@ CORS_ORIGIN=https://your-app.vercel.app
                                  处理：Resend API 分批发送
                                  输出：outreach_emails (sent/failed)
 ```
+ 
+ 
+---
+
+## 附录 C：客户名单与开发信撰写范围设计补充（2026-04-30）
+
+### C.1 设计目标
+
+开发信撰写不应只服务于系统搜索出来的客户。真实业务中，用户可能已有自己的客户数据，也可能只想给少量客户手动写几封开发信。因此新增“客户名单工作台”作为统一入口，但必须保护已经稳定的 customer-acquisition pipeline。
+
+核心原则：
+
+- customer-acquisition pipeline 只作为上游数据生产器，继续负责搜索、爬取、AI 分析、排序、保存 leads，不在该 pipeline 内加入客户名单/CRM 复杂逻辑。
+- 客户名单只读取和组织现有 leads / tasks / outreach_emails，不反向影响客户开发 pipeline。
+- 开发信撰写 pipeline 从“默认读取全部 leads”调整为“按用户选择范围读取 leads”。
+- 上传客户、手动输入客户走独立导入/手动来源，不复用客户开发 pipeline。
+
+### C.2 客户名单页面
+
+导航栏新增：客户名单。
+
+默认表格列：
+
+| 列 | 说明 |
+|---|---|
+| 公司名称 | lead.company_name |
+| 网站 | lead.website |
+| 国家/地区 | lead.country |
+| 行业 | lead.industry |
+| 公司角色 | lead.company_role |
+| 联系人 | lead.contact_name |
+| 邮箱 | lead.email |
+| 来源 List | 短期使用 lead.task_id 关联 Task 作为来源批次 |
+| 匹配度 | lead.match_score |
+| 开发信状态 | 未写 / 已写 / 已发送 |
+| 操作 | 查看详情、生成/重新生成开发信、导出等 |
+
+详情/展开内容：
+
+- AI 分析摘要：lead.ai_summary
+- 业务匹配点：lead.business_match
+- 开发建议：lead.outreach_suggestion
+- 邮件主题：outreach_emails.email_subject
+- 开发信正文：outreach_emails.email_body
+
+开发信状态映射：
+
+- 未写：没有关联 outreach_emails 记录。
+- 已写：存在 outreach_emails，且 send_status = draft。
+- 已发送：存在 outreach_emails，且 send_status = sent。
+
+MVP 暂不把发送失败放入主状态枚举；失败原因可后续在详情中展示。
+
+### C.3 List / 来源批次策略
+
+MVP 不新增复杂 CRM 表。短期使用现有 Task 作为 List：
+
+- 每次客户搜索 task = 一个来源 List。
+- 每次上传客户资料生成开发信，可创建一个 import/email-craft task，作为上传来源 List。
+- 每次手动输入客户，可创建一个 manual task，作为手动来源 List。
+
+List 命名先自动生成，例如：
+
+- USA ceiling systems - 2026-04-30
+- 上传客户名单 - 2026-04-30
+- 手动输入客户 - 2026-04-30
+
+后续如果需要用户自定义命名、一个客户属于多个 List，再增加 lead_lists / lead_list_items 多对多表；MVP 阶段不做。
+
+### C.4 开发信撰写入口
+
+点击“开发信撰写”后，用户应先选择生成范围，而不是默认全量生成：
+
+1. 选择已有客户 List。
+2. 上传新的客户资料。
+3. 手动输入少量客户信息。
+
+生成参数建议支持：
+
+```json
+{
+  "source_task_id": 123,
+  "lead_ids": [1, 2, 3],
+  "files": [],
+  "manual_leads": [],
+  "language": "en",
+  "only_without_email_draft": true
+}
+```
+
+默认只为“未写”客户生成开发信，避免重复消耗模型额度。用户明确点击“重新生成”时，才覆盖或新增新的开发信草稿。
+
+### C.5 手动输入客户
+
+当用户只有几个目标客户时，可以在聊天框直接输入客户信息，例如：
+
+> 帮我给 ABC Lighting 写一封英文开发信，他们是美国酒店照明工程商，网站是 abc.com，联系人 John，邮箱 john@abc.com。
+
+MVP 流程：
+
+1. LLM 从自然语言中抽取客户字段。
+2. 保存为 leads 记录，来源 List 为“手动输入客户”。
+3. 复用 email-craft prompt 和 pipeline 生成开发信。
+4. 开发信保存到 outreach_emails，后续可在客户名单中查看、导出、发送。
+
+这样少量客户和批量客户最终都进入统一客户池，避免后续 email-blast 状态追踪断裂。
+
+### C.6 实施顺序
+
+1. 新增客户名单导航页，读取现有 leads + outreach_emails，展示默认列和三态开发信状态。
+2. 新增客户详情弹窗/展开区，展示 AI 分析摘要、业务匹配点、开发建议、邮件主题、开发信正文。
+3. email-craft 支持按 source_task_id / lead_ids 选择范围生成，不再默认全量读取 leads。
+4. 上传客户资料保存为独立来源 List 后再生成开发信。
+5. 手动输入客户保存为 lead 后复用 email-craft 生成。
+
+### C.7 风险控制
+
+- 不修改 customer-acquisition pipeline 的搜索、爬取、AI 分析、排序、保存主流程。
+- 新增能力优先放在 lead workspace、lead_service、email_craft_pipeline_service 外围逻辑中。
+- 现有 leads.task_id 含义保持为“来源任务”。
+- 客户名单页面只做读取和聚合展示，不改变上游 pipeline 输出。

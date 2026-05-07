@@ -8,6 +8,8 @@ import {
   Send,
   CheckCircle,
   Settings,
+  AlertCircle,
+  MessageCircle,
 } from "lucide-react";
 import type { CalloutData } from "@/types";
 
@@ -18,43 +20,55 @@ const iconMap: Record<string, React.ElementType> = {
   send: Send,
   "check-circle": CheckCircle,
   settings: Settings,
+  "alert-circle": AlertCircle,
+  "message-circle": MessageCircle,
 };
 
 interface CalloutCardProps {
   data: CalloutData;
-  onViewList?: () => void;
-  onDownloadExcel?: () => void;
+  onViewList?: (taskId?: number) => void;
+  onDownloadExcel?: (taskId?: number) => void;
+  onDownloadEmails?: (taskId?: number) => void;
   onViewProfile?: () => void;
-  onViewEmails?: () => void;
+  onViewEmails?: (taskId?: number) => void;
   onGoSettings?: () => void;
+  onGoToCustomerList?: () => void;
 }
 
 export default function CalloutCard({
   data,
   onViewList,
   onDownloadExcel,
+  onDownloadEmails,
   onViewProfile,
   onViewEmails,
   onGoSettings,
+  onGoToCustomerList,
 }: CalloutCardProps) {
   const Icon = iconMap[data.icon] || CheckCircle;
 
   const handleAction = (type: string) => {
     switch (type) {
       case "view-list":
-        onViewList?.();
+        onViewList?.(data.taskId);
         break;
       case "download-excel":
-        onDownloadExcel?.();
+        onDownloadExcel?.(data.taskId);
+        break;
+      case "download-emails":
+        onDownloadEmails?.(data.taskId);
         break;
       case "view-profile":
         onViewProfile?.();
         break;
       case "view-emails":
-        onViewEmails?.();
+        onViewEmails?.(data.taskId);
         break;
       case "go-settings":
         onGoSettings?.();
+        break;
+      case "go-customer-list":
+        onGoToCustomerList?.();
         break;
     }
   };
@@ -73,6 +87,11 @@ export default function CalloutCard({
 
       {/* Stats */}
       <div className="flex flex-col gap-0.5 mb-3 pl-1">
+        {data.summary && (
+          <span className="text-[13px] text-text-secondary">
+            {data.summary}
+          </span>
+        )}
         {data.stats.map((stat, i) => (
           <span key={i} className="text-[13px] text-text-secondary">
             {stat}

@@ -6,7 +6,10 @@ import {
   Building2,
   Mail,
   Search,
+  UsersRound,
   ChevronRight,
+  LogOut,
+  CircleUserRound,
 } from "lucide-react";
 import type { NavItem, ChatHistoryItem } from "@/types";
 
@@ -16,6 +19,8 @@ interface SidebarProps {
   chatHistory: ChatHistoryItem[];
   activeSessionId: string | null;
   onSelectChat: (sessionId: string) => void;
+  userEmail?: string;
+  onSignOut: () => void;
 }
 
 export default function Sidebar({
@@ -24,6 +29,8 @@ export default function Sidebar({
   chatHistory,
   activeSessionId,
   onSelectChat,
+  userEmail,
+  onSignOut,
 }: SidebarProps) {
   return (
     <aside className="w-sidebar h-full bg-surface-side-bg flex flex-col border-r border-text-border shrink-0">
@@ -64,6 +71,17 @@ export default function Sidebar({
         >
           <Building2 size={16} strokeWidth={1.8} />
           <span>公司资料</span>
+        </button>
+        <button
+          onClick={() => onNavChange("customer-list")}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] transition-colors duration-150 ${
+            activeNav === "customer-list"
+              ? "bg-brand-blue-light text-brand-blue"
+              : "text-text-primary hover:bg-gray-100"
+          }`}
+        >
+          <UsersRound size={16} strokeWidth={1.8} />
+          <span>客户名单</span>
         </button>
         <button
           onClick={() => onNavChange("email-config")}
@@ -124,11 +142,26 @@ export default function Sidebar({
       </div>
 
       {/* Bottom */}
-      <div className="px-4 py-3 border-t border-text-border">
-        <button className="flex items-center gap-1.5 text-[13px] text-brand-blue hover:text-brand-blue-hover transition-colors">
+      <div className="space-y-2 border-t border-text-border px-3 py-3">
+        <button className="flex items-center gap-1.5 px-1 text-[13px] text-brand-blue transition-colors hover:text-brand-blue-hover">
           <span>升级计划</span>
           <ChevronRight size={14} />
         </button>
+        <div className="flex items-center gap-2 rounded-lg bg-white px-2 py-2">
+          <CircleUserRound size={17} className="shrink-0 text-text-secondary" />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-text-secondary">
+            {userEmail || "已登录"}
+          </span>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="rounded-md p-1 text-text-tertiary transition hover:bg-gray-100 hover:text-text-primary"
+            title="退出登录"
+            aria-label="退出登录"
+          >
+            <LogOut size={15} />
+          </button>
+        </div>
       </div>
     </aside>
   );

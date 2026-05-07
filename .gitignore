@@ -41,6 +41,10 @@ analyzed_results.json
 
 # Claude Code local
 .claude/
+.codex-run-logs/
+
+# Logs
+*.log
 
 # Alembic
 # Keep versions/ for migration history, but ignore temp files

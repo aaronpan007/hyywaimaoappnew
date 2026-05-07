@@ -19,3 +19,8 @@ class OutreachEmail(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    resend_message_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_send_attempt_at: Mapped[str | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_event: Mapped[str] = mapped_column(Text, nullable=False, default="")

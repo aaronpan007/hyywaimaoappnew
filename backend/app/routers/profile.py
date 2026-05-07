@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 
 from app.dependencies import CurrentUser, DBSession
 from app.schemas.profile import CompanyProfileResponse
@@ -13,6 +16,22 @@ async def get_profile(db: DBSession, user: CurrentUser):
     if profile is None:
         return {"detail": "No profile found"}
     return profile.model_dump(by_alias=True)
+
+
+@router.get("/profile/export")
+async def export_profile(db: DBSession, user: CurrentUser):
+    exported = await profile_service.export_current_profile_docx(db, user)
+    if exported is None:
+        raise HTTPException(status_code=404, detail="No profile found")
+    content, filename = exported
+    encoded_filename = quote(filename)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+    )
 
 
 @router.post("/profile", response_model=CompanyProfileResponse)
