@@ -6,8 +6,10 @@ Extracts emails, phones, LinkedIn, about/products text from company websites.
 
 import asyncio
 import logging
+import os
 import random
 import re
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -45,11 +47,32 @@ else:
         / "chrome-linux" / "chrome"
     )
 
+# System Chromium paths to try (Linux)
+_SYSTEM_CHROMIUM_PATHS = [
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium",
+]
+
 
 def _find_chromium() -> str | None:
+    # Try Playwright-managed Chromium first
     if _CHROMIUM_PATH.exists():
         return str(_CHROMIUM_PATH)
+    # Fall back to system Chromium
+    for path in _SYSTEM_CHROMIUM_PATHS:
+        if Path(path).exists():
+            return path
+    # Try shutil.which as last resort
+    found = shutil.which("chromium-browser") or shutil.which("chromium")
+    if found:
+        return found
     return None
+
+
+def _needs_no_sandbox() -> bool:
+    """Linux root or container environments need --no-sandbox."""
+    return sys.platform == "linux" and os.getuid() == 0
 
 
 def _extract_domain(url: str) -> str:
@@ -281,6 +304,8 @@ async def _scrape_all_async(companies: list[dict], timeout_s: int = 30) -> list[
         chromium = _find_chromium()
         if chromium:
             launch_kwargs["executable_path"] = chromium
+        if _needs_no_sandbox():
+            launch_kwargs["args"] = ["--no-sandbox", "--disable-gpu"]
 
         browser = await p.chromium.launch(**launch_kwargs)
 
