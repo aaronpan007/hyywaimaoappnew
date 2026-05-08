@@ -183,6 +183,10 @@ pm2 startup    # 按提示执行输出的 sudo 命令，设置开机自启
 # 验证
 curl http://127.0.0.1:8000/health
 # 应返回: {"status":"ok"}
+curl http://127.0.0.1:8001/api/auth/ok
+# 应返回: 404（说明 auth-service 在运行，只是 /api/auth/ok 不是有效路由）
+pm2 logs waimao-auth --lines 5
+# 应显示: [auth-service] Better Auth listening on http://127.0.0.1:8001
 ```
 
 ---
@@ -217,12 +221,28 @@ sudo certbot certonly --nginx -d api.clientconnet.com
 sudo systemctl enable certbot.timer
 ```
 
-### 2. 正式 Nginx 配置
+### 2. Auth Service（Node.js Better Auth）
+
+Vercel 无法直连腾讯云 PostgreSQL，因此 Better Auth 服务运行在后端服务器上，连本地 PG。
+
+```bash
+cd /var/www/hyyskill/auth-service
+npm install
+```
+
+> 环境变量已从 `/var/www/hyyskill/.env` 读取（`BETTER_AUTH_SECRET`、`BETTER_AUTH_COOKIE_DOMAIN`、`DATABASE_URL` 等），无需单独配置。
+
+### 3. 正式 Nginx 配置
 
 ```bash
 sudo tee /etc/nginx/sites-available/api.clientconnet.com << 'EOF'
 upstream waimao_backend {
     server 127.0.0.1:8000;
+    keepalive 64;
+}
+
+upstream waimao_auth {
+    server 127.0.0.1:8001;
     keepalive 64;
 }
 
@@ -241,6 +261,17 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     client_max_body_size 20M;
+
+    # Better Auth 路由（注册/登录/Session）
+    location /api/auth/ {
+        proxy_pass http://waimao_auth;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection '';
+    }
 
     # SSE 支持（关键！关闭缓冲，长超时）
     location / {
@@ -308,12 +339,12 @@ curl -s https://api.clientconnet.com/health
 | 变量名 | 值 |
 |--------|----|
 | `NEXT_PUBLIC_API_URL` | `https://api.clientconnet.com` |
+| `NEXT_PUBLIC_AUTH_URL` | `https://api.clientconnet.com` |
 | `BETTER_AUTH_URL` | `https://clientconnet.com` |
 | `BETTER_AUTH_SECRET` | `JMnI6WRbmVZsZRAUvJlrjFdIW2BLc0V6Wp9AGSPR1Oo` |
 | `BETTER_AUTH_COOKIE_DOMAIN` | `.clientconnet.com` |
-| `BETTER_AUTH_DATABASE_URL` | `postgresql://postgres:<YOUR_DB_PASSWORD>@<服务器公网IP>:5432/waimao` |
 
-> `BETTER_AUTH_DATABASE_URL` 允许 Vercel serverless 函数直连腾讯云 PostgreSQL（用于 session 校验）。
+> `NEXT_PUBLIC_AUTH_URL` 指向前端 auth-client 的请求目标（后端 auth-service），Vercel 不再需要直连 PostgreSQL。
 
 ### 3. 绑定自定义域名
 
@@ -419,7 +450,7 @@ sudo -u postgres pg_dump waimao > /var/www/hyyskill/backup_$(date +%Y%m%d).sql
 
 1. **Playwright Linux 兼容**：`playwright install-deps chromium` 安装系统库是必须的，部署后立即测试爬虫功能
 2. **单 worker 限制**：`task_manager.py` 用内存 dict 管理任务，PM2 只能 1 个实例；后续可迁移到 Redis
-3. **Vercel → PostgreSQL 直连**：Better Auth 从 Vercel serverless 直连腾讯云 PG，需开放 5432 + pg_hba.conf 允许 Vercel IP 段 `76.76.21.0/24`
+3. **Auth Service 独立进程**：`auth-service/` 是独立的 Node.js 进程（PM2 waimao-auth），与 FastAPI（waimao-api）共享同一个 `.env`，连本地 PostgreSQL
 4. **SSE 穿透 Nginx**：已配置 `proxy_buffering off` + 300s 超时，确保长连接不中断
 5. **端口冲突**：部署前先 `sudo lsof -i :80 -i :443` 确认端口未被其他服务（如宝塔/OpenClaw）占用
 6. **pyenv 全局生效**：PM2 通过 bash 启动，确保 `.bashrc` 中有 pyenv 初始化，否则 python 版本不对

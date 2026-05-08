@@ -1,0 +1,14 @@
+{
+  "name": "waimao-auth",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "better-auth": "^1.0.0",
+    "dotenv": "^16.4.0",
+    "pg": "^8.13.0"
+  }
+}
