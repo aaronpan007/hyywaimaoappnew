@@ -16,6 +16,10 @@ const cookieDomain = process.env.BETTER_AUTH_COOKIE_DOMAIN;
 export const auth = betterAuth({
   appName: "AI 外贸业务员",
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
+  trustedOrigins: [
+    process.env.BETTER_AUTH_URL || "http://localhost:3000",
+    "https://www.clientconnet.com",
+  ],
   secret: process.env.BETTER_AUTH_SECRET,
   database: pool,
   emailAndPassword: {
