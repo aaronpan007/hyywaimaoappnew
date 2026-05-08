@@ -32,16 +32,35 @@
 - 2026-05-07 部署前 Resend webhook 配置已更新：Resend 控制台 endpoint 使用 `https://api.clientconnet.com/api/emails/resend/webhook`，根 `.env` 已换为真实 webhook signing secret（不要写入文档或提交）。
 - 2026-05-07 Better Auth 注册/登录闭环已完成：Next.js 暴露 `/api/auth/[...all]`，前端登录/注册/退出可用，FastAPI 读取 Better Auth session cookie 并映射到本项目 `users.id`，`CurrentUser=1` stub 已移除。
 - 2026-05-07 部署准备已完成：`scraper.py` Chromium 路径改为跨平台（Windows/Linux），PM2 `ecosystem.config.cjs` 已创建，完整部署指南 `doc/deploy.md` 已输出（含腾讯云环境搭建、后端部署、Nginx 反代+SSL、DNS、Vercel 前端、Resend webhook、验证清单）。
+- 2026-05-07 代码已推送 GitHub：`git@github.com:aaronpan007/hyywaimaoappnew.git`（commit `84a9b24`，74 files，+12459 行）。
+- 2026-05-07 腾讯云服务器部署进行中（服务器 IP `111.230.185.13`，Ubuntu 24.04 LTS）：
+  - [x] Phase 1：系统基础依赖（apt update/upgrade + build-essential + libpq-dev）
+  - [x] Phase 2：PostgreSQL 17（密码 `AAbbcc2015`，数据库 `waimao`，远程访问已开放 Vercel IP 段 `76.76.21.0/24`）
+  - [x] Phase 3：Python 3.13（deadsnakes PPA，pyenv 因 GitHub 被墙改用 PPA）
+  - [x] Phase 4：Node.js 22（已有 nodesource 源）+ PM2 7.0.1
+  - [x] Phase 5：Nginx 1.24 + Certbot 2.9 + python3-certbot-nginx
+  - [x] Phase 6：Playwright Chromium（系统 snap 包 `chromium-browser`，因 Playwright 官方二进制下载超时改用系统包）
+  - [x] Phase 7：防火墙（UFW 开放 80/443/5432）
+  - [x] 后端代码部署：git clone（HTTPS，SSH 因 GitHub 被墙不可用）+ venv + pip install + .env
+  - [x] 数据库迁移：修复迁移链（创建 `000_initial.py` 初始建表迁移 + 修复 `001` down_revision + 重排表顺序避免 FK 冲突），7 个迁移全部成功
+  - [x] PM2 启动后端：`waimao-api` online，`curl http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`
+  - [ ] Nginx 反代 + SSL 证书（`api.clientconnet.com`）— DNS 已配但走了 Cloudflare 代理，需在 Cloudflare 关闭 `api` 子域的代理（Proxied → DNS only）
+  - [ ] DNS 配置（`api` A 记录已存在走 Cloudflare，`@` A→76.76.21.21，`www` CNAME→cname.vercel-dns.com）
+  - [ ] Vercel 前端部署（环境变量 + 域名绑定）
+  - [ ] Resend webhook 确认 + 端到端验证清单
 
 ### 后续 TODO
 
-1. **按 `doc/deploy.md` 分步执行部署**：腾讯云服务器搭建 → 后端部署 → Nginx+SSL → DNS → Vercel → Resend webhook。
-2. 部署后回归验证：Resend webhook endpoint、Better Auth 登录态跨域 cookie、后端 `CORS_ORIGINS`（加入前端 Vercel/正式域名）、批量发送小样本。
-3. 数据库索引优化与 seed 脚本多用户适配。
+1. **Nginx 反代 + SSL**：先在 Cloudflare 关闭 `api.clientconnet.com` 的代理（Proxied → DNS only），确认 dig 返回 `111.230.185.13` 后，配 Nginx server block + Certbot SSL 证书。
+2. **DNS 补齐**：`@` A→76.76.21.21（Vercel apex），`www` CNAME→cname.vercel-dns.com。
+3. **Vercel 前端部署**：导入 GitHub 仓库，设置环境变量（NEXT_PUBLIC_API_URL、BETTER_AUTH_URL/SECRET/COOKIE_DOMAIN/DATABASE_URL），绑定域名 `clientconnet.com`。
+4. **Resend webhook 确认**：Resend 控制台 endpoint 确认为 `https://api.clientconnet.com/api/emails/resend/webhook`。
+5. **端到端验证**：health、前端加载、登录/注册、cookie 跨域、pipeline SSE、Resend 发送、webhook 回调。
+6. PM2 startup 开机自启。
 
 ---
 
-更新时间：2026-05-07（部署准备完成）
+更新时间：2026-05-07（部署进行中：后端已启动，待 Nginx+SSL）
 
 ---
 
@@ -919,103 +938,130 @@ MVP 流程：
 1. Seed 脚本适配多用户。
 2. 部署上线并做生产烟测：登录/注册、`/api/settings`、客户名单、Resend webhook、小批量真实发送。
 
+### 2026-05-08 部署上线进度（当天会话记录）
+
+#### 已完成
+
+1. **Nginx 反代 + SSL**：`api.clientconnet.com` 已配好 HTTPS，`/health` 返回 ok。
+2. **DNS 配置**：`api` A→111.230.185.13（Cloudflare DNS only），`@` A→76.76.21.21，`www` CNAME→cname.vercel-dns.com。
+3. **Vercel 前端部署**：框架改为 Next.js，`clientconnet.com` / `www.clientconnet.com` 已绑定，构建通过。
+4. **Better Auth trustedOrigins 修复**：添加 `https://www.clientconnet.com` 解决 403 origin 错误。
+5. **Better Auth 架构改造（关键决策）**：
+   - **问题**：Vercel serverless 函数在美国，无法 TCP 连接腾讯云 PostgreSQL 5432 端口（`connect ETIMEDOUT`）。
+   - **解决**：新建 `auth-service/` 独立 Node.js 服务，运行在腾讯云 8001 端口，通过 localhost 连接 PostgreSQL。
+   - **改动文件**：
+     - `auth-service/index.js`：独立 Better Auth 服务，用 dotenv 加载 `../.env`，连本地 PG
+     - `auth-service/package.json`：依赖 better-auth + pg + dotenv
+     - `frontend/lib/auth-client.ts`：`createAuthClient({ baseURL: NEXT_PUBLIC_AUTH_URL })` 指向 `api.clientconnet.com`
+     - `frontend/lib/auth.ts`：无 DATABASE_URL 时返回 null（Vercel 构建不报错）
+     - `frontend/app/api/auth/[...all]/route.ts`：auth 为 null 时返回 404 no-op
+     - `backend/ecosystem.config.cjs`：新增 waimao-auth 进程（端口 8001）
+     - `deploy/nginx-api.clientconnet.com`：标准 Nginx 配置文件（含 CORS）
+6. **服务器 auth-service 部署**：`npm install` + PM2 启动，auth-service online，`curl http://127.0.0.1:8001/api/auth/ok` 返回 `{"ok":true}`。
+7. **Nginx CORS 配置**：在 `/api/auth/` location 添加 CORS 头和 OPTIONS 预检处理（`if` 块内也重复了 CORS 头）。
+
+#### 当前卡点：注册仍失败（ERR_CONNECTION_CLOSED）
+
+**现象**：浏览器访问 `www.clientconnet.com` 注册时，`https://api.clientconnet.com/api/auth/sign-up/email` 返回 `ERR_CONNECTION_CLOSED`。
+
+**已排除**：
+- auth-service 本身正常运行（`curl http://127.0.0.1:8001/api/auth/ok` 返回 200）
+- auth-service 注册接口本地可用（`curl -X POST http://127.0.0.1:8001/api/auth/sign-up/email` 返回正确响应）
+- Nginx 配置语法正确（`nginx -t` 通过）
+- Nginx HTTPS 正常（`/health` 返回 ok）
+
+**怀疑原因（需排查）**：
+1. **Nginx CORS 配置可能格式有问题**：通过 `vi` 手动编辑，终端粘贴可能导致隐藏字符（如 `\r` 或 Unicode 空格）。建议用 `cat -A /etc/nginx/sites-available/api.clientconnet.com` 检查是否有 `^M` 或异常字符。
+2. **waimao-api 崩溃循环**：`pm2 status` 显示 waimao-api 已重启 798 次并处于 stopped 状态。虽然不影响 auth-service（走不同端口），但说明后端有严重错误。需先 `pm2 logs waimao-api --lines 30` 排查崩溃原因并修复。
+3. **Nginx 配置文件不完整**：之前的 `vi` 编辑中，文件末尾可能缺少 `access_log` 和 `error_log` 行（终端粘贴时被截断过多次）。需确认文件完整性。
+
+**建议排查步骤（按优先级）**：
+1. `cat -A /etc/nginx/sites-available/api.clientconnet.com` 检查隐藏字符
+2. `pm2 logs waimao-api --lines 30` 排查后端崩溃原因
+3. 确认 Nginx 配置文件完整（应有 `access_log` 和 `error_log` 行）
+4. 如有异常字符，用 `vi` 重新编辑，或用 GitHub 上的 `deploy/nginx-api.clientconnet.com` 覆盖（需先 `git pull`）
+5. 用 `curl -v https://api.clientconnet.com/api/auth/sign-up/email` 从服务器本地测试 HTTPS 端口是否正常
+6. 检查 `sudo tail -20 /var/log/nginx/api.clientconnet.com.error.log` 看是否有 Nginx 错误
+
+#### 架构总结
+
+```
+用户浏览器 (www.clientconnet.com)
+  ├─ 前端页面：Vercel 托管
+  ├─ 业务 API：https://api.clientconnet.com → Nginx → waimao-api (FastAPI :8000)
+  └─ Auth API：https://api.clientconnet.com/api/auth/* → Nginx → waimao-auth (Node.js :8001) → 本地 PostgreSQL
+```
+
 ### 给其他 AI 编程工具的接手提示词
 
 如果换其他 AI 编程工具继续开发，可以直接复制下面这段作为上下文：
 
 ```text
-请先阅读 doc/progress-todo.md 的 email-blast 章节和 2026-05-06 更新记录。当前项目是 AI 外贸员智能体，已接通 customer-acquisition、company-profile、email-craft、email-blast 四个 pipeline。
-
-email-blast 当前状态：
-- dry-run 模式已完全移除，所有发送均为 Resend 真实发送。
-- 客户名单选择客户 → 发送确认弹窗 → /api/tasks/start(confirmType=”email_blast”) → SSE/timeline → Resend 实发 → outreach_emails 状态回写 → Resend webhook 回写 delivered/bounced/failed/complained。
-- 默认 send_mode=”auto”，遵循 waimao_toolkit_new/skills/email-blast/：按客户国家/地区推算当地工作时间，非工作日或非 09:00-17:00 跳过，不改写该邮件状态；前端弹窗可切换”按客户当地工作时间/立即发送”。
-- 发送前检查 RESEND_API_KEY、发件人名称、发件邮箱前缀、邮箱配置确认状态、MAIL_DOMAIN，并尝试通过 Resend API 校验 key 和发件域名状态；reply_to_email 可空。
-- 发送完成卡片只显示”前往客户名单”按钮（go-customer-list action），点击跳转客户名单页。
-- LLM 意图识别已强化 email_craft/email_blast 区分：”发邮件”→ email_blast，”写开发信”→ email_craft。
-- 客户名单保留 `delivered/bounced/complained` 真实状态；顶部筛选只保留”全部/未写/已写/已发送/失败”。
-- 发送确认弹窗参数：发送策略 `send_mode`、每日上限 `daily_limit`、最小/最大间隔 `delay_min/delay_max`（无 dry-run）。
-- 公司画像保存后生成邮箱推荐配置：`sender_name` 从公司名提取，`from_email_prefix` 默认 `sales`，`MAIL_DOMAIN=clientconnet.com`。
-- `user_settings.confirmed_at` 区分推荐态/确认态：客户名单首次点击发送会引导到邮箱配置页确认。
-- 2026-05-06 端到端联调已完成：Resend 真实发送成功、webhook 回写验证通过、Alembic 迁移同步确认。
-- 2026-05-07 Resend webhook 控制台 endpoint 已配置为 `https://api.clientconnet.com/api/emails/resend/webhook`；后续生产部署必须让后端公网 API 真正跑在 `api.clientconnet.com`。
-- 2026-05-07 Better Auth 注册/登录/退出闭环已完成：Next.js 提供 `/api/auth/[...all]`，FastAPI 通过 Better Auth session cookie 识别真实 `users.id`，`CurrentUser=1` stub 已移除。
-- 生产部署时：`NEXT_PUBLIC_API_URL=https://api.clientconnet.com`；后端生产环境设置真实 `RESEND_WEBHOOK_SECRET` 和与前端一致的 `BETTER_AUTH_SECRET`；后端 `CORS_ORIGINS` 加入前端 Vercel/正式域名。
-- 如果前端和后端分属 `clientconnet.com` 子域，设置 `BETTER_AUTH_COOKIE_DOMAIN=.clientconnet.com`，确保登录 cookie 能发送到 `api.clientconnet.com`。
-
-关键文件：
-- backend/app/services/email_blast_pipeline_service.py：email-blast 编排、Resend 发送、时区窗口、预检。
-- backend/app/services/chat_service.py：email-blast 对话入口、邮箱配置追问、start_email_blast_pipeline。
-- backend/app/services/intent_router.py：LLM 意图识别（email_craft/email_blast 已强化区分）。
-- backend/app/routers/tasks.py：confirmType=”email_blast” 启动入口。
-- backend/app/routers/emails.py + backend/app/services/email_service.py：Resend webhook。
-- frontend/components/customer-list.tsx：客户名单、发送确认弹窗、发送设置 UI。
-- frontend/components/email-config.tsx：邮箱配置页（精简版 + 实时预览）。
-- frontend/components/pipeline-timeline.tsx：时间轴组件（步骤名称+消息上下两行排列）。
-- frontend/app/page.tsx / frontend/lib/api.ts / frontend/components/chat-area.tsx：参数透传。
-- frontend/lib/auth.ts / frontend/lib/auth-client.ts / frontend/app/api/auth/[...all]/route.ts：Better Auth 服务端配置、客户端实例、Next.js Auth 路由。
-- frontend/components/auth-screen.tsx / frontend/components/sidebar.tsx：登录注册界面、用户邮箱展示、退出登录。
-- backend/app/dependencies.py / backend/app/models/auth.py / backend/alembic/versions/9b2c3d4e5f6a_add_better_auth_tables.py：FastAPI session cookie 校验、Better Auth 表模型和迁移。
-
-下一步小任务：
-1. 部署上线（Vercel + 腾讯云/后端），确保后端公网 API 绑定 `api.clientconnet.com`。
-2. 生产环境变量核对：真实 `RESEND_API_KEY`、真实 `RESEND_WEBHOOK_SECRET`、`MAIL_DOMAIN=clientconnet.com`、`NEXT_PUBLIC_API_URL=https://api.clientconnet.com`、前后端一致的 `BETTER_AUTH_SECRET`、生产 `BETTER_AUTH_URL`/`BETTER_AUTH_DATABASE_URL`。
-3. 部署后烟测：注册/登录/退出、`/api/settings`、客户名单首次发送配置确认、Resend webhook、小批量真实发送。
-4. Seed 脚本适配多用户。
-
-验证命令：
-- cd backend && python -m alembic upgrade head
-- cd backend && python -m compileall -f app
-- cd frontend && cmd /c npx tsc --noEmit
-- cd frontend && cmd /c npm run build
-
-注意：不要重构 backend/app/services/pipeline_service.py；不要引入 lead_lists 新表；每次完成一个小任务后更新 doc/progress-todo.md。
-```
-
-```text
-请先阅读 doc/progress-todo.md 中”已完成 Pipeline”和”TODO：剩余 Pipeline / email-blast”部分。这个项目是 AI 外贸员智能体，4 个核心 pipeline（客户搜索、公司画像、开发信撰写、批量发送）全部已接通，客户名单页面和对话历史持久化也已完成。
+请先阅读 doc/progress-todo.md 和 doc/deploy.md。当前项目是 AI 外贸员智能体，4 个 pipeline 全部已接通，Better Auth 登录注册已完成，正在部署上线中。
 
 项目概览：
 - 前端：Next.js 14 + TypeScript + Tailwind CSS，目录 frontend/
-- 后端：Python FastAPI + SQLAlchemy async + PostgreSQL，目录 backend/
-- 4 个已接通 Pipeline：customer-acquisition、company-profile、email-craft、email-blast
-- 客户名单页面：frontend/components/customer-list.tsx（整行点击打开详情抽屉，支持批量选择/删除/生成开发信/发送邮件/重写/复制/手动编辑邮件主题与正文/导出）
-- 对话历史：conversations + conversation_messages 表，前端自动从后端加载历史会话
+- 后端：Python 3.13 + FastAPI + SQLAlchemy async + PostgreSQL 17，目录 backend/
+- Auth 服务：Node.js 独立 Better Auth 服务，目录 auth-service/（端口 8001）
+- GitHub：https://github.com/aaronpan007/hyywaimaoappnew.git（main 分支，国内被墙用 HTTPS clone）
+- 部署指南：doc/deploy.md（分步可复制粘贴执行）
 
-已完成的关键能力：
-1. 客户搜索 → Serper搜索 → Playwright爬取 → AI分析 → 筛选排序 → 存DB → SSE实时进度
-2. 公司画像 → Playwright爬官网 → AI结构化画像 → 增量更新/重新采集/补充资料
-3. 开发信撰写 → 加载画像+线索(DB/上传/手动输入) → AI逐条生成 → 覆盖策略(草稿覆盖/已发送保留新建) → 查看/导出 Excel → 用户可手动编辑主题和正文
-4. 批量发送 → dry-run 已移除，全部真实 Resend 发送 → 逐封 sending/sent/failed 状态回写 → Resend webhook 回写 delivered/bounced/failed/complained → 完成后”前往客户名单”按钮
-5. 客户名单 → 表格(搜索/筛选/排序/分页) → 详情抽屉(整行点击) → 批量生成/重写/删除/复制/编辑/导出
-6. 对话历史 → 后端持久化(conversations表) → 前端自动加载历史会话 → 上下文记忆
-7. LLM意图识别 → Replicate GPT + 正则fallback → email_craft/email_blast 已强化区分
-8. 邮箱配置 → 精简版配置页(实时预览) + 系统推荐态/用户确认态区分
-9. Resend webhook → POST `/api/emails/resend/webhook`，Svix 签名校验
-10. SPF/DKIM/DMARC 三套 DNS 认证齐全
-11. Better Auth 登录注册 → Next.js `/api/auth/[...all]` + 前端登录/注册/退出 + FastAPI 读取 Better Auth session cookie 映射真实 `users.id`
+服务器：腾讯云 111.230.185.13，Ubuntu 24.04，用户 ubuntu
 
-重要边界：
-1. 不要修改 backend/app/services/pipeline_service.py，避免把已经稳定的 customer-acquisition 客户开发 pipeline 改坏。
-2. 不要大重构，不要引入 lead_lists 新表；MVP 继续用 tasks 作为来源 List。
-3. 每次只做小任务，做完更新 doc/progress-todo.md。
-4. 后端启动：cd backend && PYTHONUTF8=1 uvicorn app.main:app --reload --port 8002；当前本机 `8002` 有旧 uvicorn 残留时可临时用 `8011`，并同步改 `frontend/.env.local`。
-5. 前端启动：cd frontend && npm run dev（端口3000）
-6. Python 编码：Windows 环境，需设置 PYTHONUTF8=1
-7. 生产部署约定：后端公网 API 使用 `https://api.clientconnet.com`，Resend webhook URL 保持 `https://api.clientconnet.com/api/emails/resend/webhook`。
-8. Auth/跨域约定：生产 `NEXT_PUBLIC_API_URL=https://api.clientconnet.com`；前后端设置同一个 `BETTER_AUTH_SECRET`；后端 `CORS_ORIGINS` 加入前端 Vercel/正式域名；跨子域时设置 `BETTER_AUTH_COOKIE_DOMAIN=.clientconnet.com`。
+部署进度（2026-05-08）：
+- [x] PostgreSQL 17（密码 AAbbcc2015，数据库 waimao）
+- [x] Python 3.13（deadsnakes PPA）、Node.js 22 + PM2 7.0.1
+- [x] Nginx + SSL（api.clientconnet.com HTTPS 正常，/health 返回 ok）
+- [x] Playwright Chromium（系统 snap 包 chromium-browser）
+- [x] 腾讯云防火墙 + UFW（已 disable，80/443/5432 已开放）
+- [x] 后端代码部署 + venv + pip install + .env + 7 个 alembic 迁移
+- [x] auth-service 部署（npm install + PM2 启动，端口 8001 online）
+- [x] Vercel 前端部署（构建通过，clientconnet.com / www.clientconnet.com 已绑定）
+- [x] DNS 配置（api A→111.230.185.13, @ A→76.76.21.21, www CNAME→cname.vercel-dns.com）
 
-下一步小任务：
-1. 部署上线（Vercel + 腾讯云/后端），确保 `api.clientconnet.com` 指到后端。
-2. 生产环境变量核对：真实 `RESEND_API_KEY`、真实 `RESEND_WEBHOOK_SECRET`、`MAIL_DOMAIN=clientconnet.com`、`NEXT_PUBLIC_API_URL=https://api.clientconnet.com`、前后端一致的 `BETTER_AUTH_SECRET`、生产 `BETTER_AUTH_URL`/`BETTER_AUTH_DATABASE_URL`。
-3. 部署后烟测：注册/登录/退出、`/api/settings`、客户名单首次发送配置确认、Resend webhook、小批量真实发送。
-4. Seed 脚本适配多用户。
+当前卡点（需立即修复）：
+1. 注册/登录失败：浏览器调 api.clientconnet.com/api/auth/* 返回 ERR_CONNECTION_CLOSED
+   - auth-service 本地 curl 正常（端口 8001），但经 Nginx HTTPS 代理后连接关闭
+   - 怀疑 Nginx 配置文件有隐藏字符或格式问题（通过 vi 手动编辑，终端粘贴多次被截断）
+   - 需用 cat -A 检查文件，或用仓库 deploy/nginx-api.clientconnet.com 覆盖
+2. waimao-api 崩溃循环：pm2 status 显示已重启 798 次并 stopped
+   - 需 pm2 logs waimao-api 排查原因
+   - 注意：GitHub 被墙无法 git pull，可用 scp 或手动编辑修复
 
-完成后请运行：
-1. cd backend && python -m alembic upgrade head
-2. cd backend && python -m compileall -f app
-3. cd frontend && cmd /c npx tsc --noEmit
-4. cd frontend && cmd /c npm run build
+Vercel 环境变量（需确认已设置）：
+- NEXT_PUBLIC_API_URL=https://api.clientconnet.com
+- NEXT_PUBLIC_AUTH_URL=https://api.clientconnet.com（新增，auth-client 指向 API 服务器的 auth）
+- BETTER_AUTH_URL=https://clientconnet.com
+- BETTER_AUTH_SECRET=JMnI6WRbmVZsZRAUvJlrjFdIW2BLc0V6Wp9AGSPR1Oo
+- BETTER_AUTH_COOKIE_DOMAIN=.clientconnet.com
+- BETTER_AUTH_DATABASE_URL 已删除（不再需要，auth 由后端 auth-service 处理）
 
-完成后更新 doc/progress-todo.md，写清楚做了什么、还没做什么、下一步怎么接。
+后端生产 .env（/var/www/hyyskill/.env）关键变量：
+- DATABASE_URL=postgresql+asyncpg://postgres:AAbbcc2015@localhost:5432/waimao
+- CORS_ORIGINS=https://clientconnet.com,https://www.clientconnet.com
+- BETTER_AUTH_SECRET=JMnI6WRbmVZsZRAUvJlrjFdIW2BLc0V6Wp9AGSPR1Oo
+
+Nginx 配置文件：/etc/nginx/sites-available/api.clientconnet.com
+- /api/auth/ → proxy_pass waimao_auth (127.0.0.1:8001)，含 CORS 头
+- / → proxy_pass waimao_backend (127.0.0.1:8000)，含 SSE 配置（proxy_buffering off）
+
+PM2 进程：
+- waimao-api：FastAPI 后端，端口 8000（当前崩溃中，需排查）
+- waimao-auth：Better Auth Node.js 服务，端口 8001（online）
+
+验证步骤（修复后执行）：
+1. pm2 logs waimao-api --lines 30（排查后端崩溃）
+2. cat -A /etc/nginx/sites-available/api.clientconnet.com（检查隐藏字符）
+3. sudo tail -20 /var/log/nginx/api.clientconnet.com.error.log
+4. curl -v https://api.clientconnet.com/api/auth/sign-up/email -X POST -H "Content-Type: application/json" -d '{"email":"test@test.com","password":"12345678","name":"test"}'
+5. 浏览器访问 www.clientconnet.com 测试注册
+
+注意事项：
+- GitHub 在国内被墙，服务器上 git pull 可能超时。修复配置文件建议用 vi 手动编辑或 scp 上传
+- PM2 用 bash 包装启动：bash -c 'source .venv/bin/activate && PYTHONUTF8=1 PYTHONUNBUFFERED=1 uvicorn app.main:app --host 127.0.0.1 --port 8000'
+- Nginx SSE 配置必须 proxy_buffering off + proxy_read_timeout 300s
+- 仓库 deploy/nginx-api.clientconnet.com 有标准 Nginx 配置（含 CORS），可作为参考或直接覆盖
+- 不要修改 backend/app/services/pipeline_service.py
+- 不要引入 lead_lists 新表
+- 每次只做小任务，做完更新 doc/progress-todo.md
 ```
