@@ -32,6 +32,40 @@ class ConfigRequiredError(Exception):
         super().__init__(f"Missing config: {', '.join(missing)}")
 
 
+def _is_generic_profile_request(message: str, params: dict) -> bool:
+    """Return True when the user asks for a profile but provides no usable material."""
+    if params.get("url") or params.get("images") or params.get("files"):
+        return False
+
+    text = (message or "").strip()
+    if len(text) > 40:
+        return False
+
+    generic_terms = [
+        "帮我",
+        "请",
+        "建立",
+        "创建",
+        "生成",
+        "整理",
+        "采集",
+        "一个",
+        "一下",
+        "公司画像",
+        "企业画像",
+        "公司资料",
+        "企业档案",
+        "公司档案",
+        "公司简介",
+        "company profile",
+    ]
+    reduced = text.lower()
+    for term in generic_terms:
+        reduced = reduced.replace(term.lower(), "")
+    reduced = reduced.strip(" ，。,.!！?？：:")
+    return len(reduced) < 4
+
+
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
@@ -82,6 +116,16 @@ async def start_chat(message: str, db, user_id: int, images: list[str] | None = 
             raise ConfigRequiredError(["replicate_api_token"])
         params.setdefault("source_text", message)
         params.setdefault("url", extract_url(message))
+        if _is_generic_profile_request(message, params):
+            return {
+                "type": "chat",
+                "reply": (
+                    "可以，我先帮您准备公司画像采集。请直接发公司官网 URL，"
+                    "或补充公司名称、主营产品、核心优势、资质认证、典型案例等资料；"
+                    "我拿到有效资料后再开始采集和整理。"
+                ),
+                "conversation_id": conv_id,
+            }
         profile_mode = params.get("profile_mode", "create")
         if profile_mode == "update":
             current = await get_current_profile(db, user_id)

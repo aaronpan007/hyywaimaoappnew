@@ -981,16 +981,21 @@ export default function Home() {
   }, []);
 
   const handleStartCollect = useCallback(() => {
-    handleSendMessage("帮我建立一个公司画像", undefined, true);
-  }, [handleSendMessage]);
+    handleCreateSession("公司画像");
+  }, [handleCreateSession]);
 
   const handleSupplement = useCallback(() => {
     handleCreateSession("补充资料");
   }, [handleCreateSession]);
 
   const handleRecollect = useCallback(() => {
-    handleSendMessage("帮我重新采集并更新公司画像", undefined, true);
-  }, [handleSendMessage]);
+    const website = companyProfile?.website || companyProfile?.profileData?.website;
+    if (website) {
+      handleSendMessage(`请基于官网 ${website} 重新采集并覆盖公司画像`, undefined, true);
+      return;
+    }
+    handleCreateSession("重新采集公司画像");
+  }, [companyProfile, handleCreateSession, handleSendMessage]);
 
   const handleExportProfile = useCallback(async () => {
     try {
@@ -1378,9 +1383,9 @@ export default function Home() {
           companyProfile={companyProfile}
           emailSettings={emailSettings}
           onBackToChat={handleBackToChat}
-          onStartCollect={() => handleSendMessage("帮我建立一个公司画像", undefined, true)}
-          onSupplement={() => handleCreateSession("补充资料")}
-          onRecollect={() => handleSendMessage("帮我重新采集并更新公司画像", undefined, true)}
+          onStartCollect={handleStartCollect}
+          onSupplement={handleSupplement}
+          onRecollect={handleRecollect}
           onExportProfile={handleExportProfile}
           onSaveEmailSettings={handleSaveEmailSettings}
           onGenerateEmails={handleGenerateEmailsFromList}

@@ -1161,3 +1161,22 @@ api.clientconnet.com
 2. Resend webhook 保持 `https://api.clientconnet.com/api/emails/resend/webhook`，需要做一次真实发送/回调确认。
 3. 清理测试注册账号（如有 `deploy.test.%@example.com`）。
 4. 迁移稳定后再决定是否关闭旧大陆腾讯云 `111.230.185.13`；短期先保留。
+
+### 2026-05-09 公司画像入口烟测修复
+
+烟测发现：
+
+- 公司资料空状态点击“开始采集公司画像”时，前端直接发送“帮我建立一个公司画像”，导致没有官网/资料也启动 company-profile pipeline，最终保存 0% 空画像。
+- “重新采集”按钮同样会在没有可用官网时直接启动 pipeline，容易再次空跑。
+- 公司画像官网采集实际走的是 `backend/app/services/profile_pipeline_service.py` 的独立 company-profile pipeline，抓取函数加载 `waimao_toolkit_new/skills/company-profile/scripts/scrape_website.py`；在服务器已安装 Playwright Chromium 的情况下应使用浏览器模式，不走 `backend/app/utils/scraper.py`。
+
+已修复：
+
+- `frontend/app/page.tsx`：公司资料空状态的“开始采集”改为只创建公司画像会话并展示引导，不再直接启动 pipeline。
+- `frontend/app/page.tsx`：已有画像的“重新采集”只有在当前画像带 `website` 时才用该官网重新采集；没有官网则打开引导会话。
+- `backend/app/services/chat_service.py`：增加后端兜底，遇到“帮我建立公司画像”这类没有 URL、图片、文件、有效资料的泛化请求时，只返回资料收集引导，不创建任务。
+
+后续验证：
+
+1. 等 Vercel 部署新前端后，再点击“开始采集公司画像”，应只出现引导，不再出现 0% 空 pipeline。
+2. 在公司画像会话里发送官网 URL，确认 timeline 进入“抓取官网资料”，并通过 `pm2 logs waimao-api` 检查是否出现 `[浏览器模式]`。
