@@ -1246,26 +1246,19 @@ api.clientconnet.com
 
 GitHub / 服务器状态：
 
-- 已推送到 GitHub `origin/main`：提交 `7bf224e`（`Fix company profile clear and update flow`）。
-- 当前本地机器无法直接 SSH 到香港服务器：`ubuntu@43.128.3.59` 和 `root@43.128.3.59` 均返回 `Permission denied (publickey,password)`，因此服务器尚未由本地完成 `git pull` 和重启。
-- 拿到服务器登录权限后执行：
-  ```bash
-  cd /var/www/hyyskill
-  git pull origin main
-  cd backend
-  python -m compileall app
-  pm2 restart waimao-api
-  curl -s https://api.clientconnet.com/health
-  pm2 logs waimao-api --lines 50 --nostream
-  ```
+- 已推送到 GitHub `origin/main`：代码提交 `7bf224e`（`Fix company profile clear and update flow`），文档状态提交 `a91ed29`（`Document deployment status for profile update`）。
+- 服务器已由用户在香港节点 `43.128.3.59` 执行 `git pull origin main`，从 `960aef3` 快进到 `a91ed29`。
+- 服务器后端验证通过：`python -m compileall app` 通过；`pm2 restart waimao-api` 后进程 `online`；本机 `curl http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`；公网 `curl -vk https://api.clientconnet.com/health` 返回 `{"status":"ok"}`。
+- PM2 日志确认新进程正常启动：`Started server process [48783]`、`Application startup complete`、`Uvicorn running on http://127.0.0.1:8000`。
 - 前端由 Vercel 关联 GitHub 时，推送 `main` 后通常会自动部署；仍需在 Vercel 控制台确认本次提交的部署状态。
 
 后续验证：
 
-1. 在已有公司画像页面点击"清空公司资料"并确认，应调用 `DELETE /api/profile`，页面回到空状态，且不出现 company-profile pipeline timeline。
-2. 清空后刷新页面，`GET /api/profile` 应返回空状态；邮箱配置不应继续绑定已删除的画像推荐。
-3. 重新建立画像后点击"补充资料"，发送"新增一个产品线..."或上传资料，应启动 `company-profile` 的 update/quick edit 流程，任务结果显示"公司画像已更新"，而不是创建客户搜索或普通聊天。
-4. 用一段包含案例/产品/资质的补充资料测试，检查输出字段是否符合 `company-profile` skill 的 schema 和完整度要求。
+1. 等 Vercel 部署 `a91ed29` 后，在浏览器打开公司资料页，确认按钮已从"重新采集"变成"清空公司资料"。
+2. 在已有公司画像页面点击"清空公司资料"并确认，应调用 `DELETE /api/profile`，页面回到空状态，且不出现 company-profile pipeline timeline。
+3. 清空后刷新页面，`GET /api/profile` 应返回空状态；邮箱配置不应继续绑定已删除的画像推荐。
+4. 重新建立画像后点击"补充资料"，发送"新增一个产品线..."或上传资料，应启动 `company-profile` 的 update/quick edit 流程，任务结果显示"公司画像已更新"，而不是创建客户搜索或普通聊天。
+5. 用一段包含案例/产品/资质的补充资料测试，检查输出字段是否符合 `company-profile` skill 的 schema 和完整度要求。
 
 下一步 TODO：
 
@@ -1283,6 +1276,8 @@ GitHub / 服务器状态：
 - 后端：FastAPI + SQLAlchemy async + PostgreSQL，目录 backend/
 - Auth：auth-service/ 独立 Better Auth Node 服务
 - 生产 API/Auth/DB 已迁移到腾讯云香港服务器 43.128.3.59；api.clientconnet.com 走 Nginx -> waimao-api/waimao-auth，公网 /health 和 /api/auth/ok 已验证通过。
+- 最新代码已推送并应用到服务器：origin/main 当前到 a91ed29，服务器 /var/www/hyyskill 已 git pull 到 a91ed29；waimao-api 已重启，http://127.0.0.1:8000/health 与 https://api.clientconnet.com/health 均返回 {"status":"ok"}。
+- 前端是否已生效取决于 Vercel 是否完成 a91ed29 的自动部署；若页面仍显示"重新采集"，先检查 Vercel 部署状态。
 
 当前最新公司资料逻辑：
 - 公司资料页已有画像时，按钮是"补充资料"、"清空公司资料"、"导出画像"。
@@ -1306,11 +1301,11 @@ GitHub / 服务器状态：
 - backend/app/services/profile_service.py
 - backend/app/services/profile_pipeline_service.py
 
-下一步建议先做验证：
-1. npm.cmd run build（frontend/；PowerShell 下不要直接用 npm.ps1）
-2. python -m compileall app（backend/）
-3. 登录后在公司资料页点击"清空公司资料"，确认无 pipeline 启动且页面回到空状态。
-4. 重新建立画像后点击"补充资料"，输入新增产品/案例，确认走 company-profile update/quick edit。
+下一步建议先做浏览器烟测：
+1. 等 Vercel 完成 a91ed29 部署后，登录前端确认公司资料页按钮为"清空公司资料"。
+2. 点击"清空公司资料"并确认，检查无 pipeline 启动且页面回到空状态。
+3. 重新建立画像后点击"补充资料"，输入新增产品/案例，确认走 company-profile update/quick edit。
+4. 用上传 docx/xlsx/csv 的方式补充公司资料，确认后端会把文本提取进 company-profile prompt；PDF 解析仍是后续 TODO。
 
 注意：
 - 不要再把"重新采集"作为公司资料页默认入口；需要重跑官网采集时，应由用户在公司画像会话中明确提供官网 URL 或新的资料。
