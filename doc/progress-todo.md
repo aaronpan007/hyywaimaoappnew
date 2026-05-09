@@ -1065,3 +1065,99 @@ PM2 进程：
 - 不要引入 lead_lists 新表
 - 每次只做小任务，做完更新 doc/progress-todo.md
 ```
+
+### 2026-05-08 本轮部署排查更新
+
+已完成本地侧排查和一处小修：
+
+- 公网 `curl -vk https://api.clientconnet.com/health` 在 TLS 握手阶段被 reset，连 `/health` 都没有进入 HTTP 层。
+- `curl -v http://api.clientconnet.com/health` 返回/跳转到 `https://dnspod.qcloud.com/static/webblock.html?d=api.clientconnet.com`，这是腾讯云/DNSPod 域名接入拦截特征。
+- 直连 IP 可达：`curl -vk https://111.230.185.13/health` 返回 `{"status":"ok"}`。说明服务器 Nginx/后端至少通过 IP 路径是通的，当前 `ERR_CONNECTION_CLOSED` 更像是 `api.clientconnet.com` 这个域名 Host/SNI 在腾讯云入口层被拦截，而不是 `/api/auth/` location 或 auth-service 自身问题。
+- SSH 当前无法免密登录：`ubuntu@111.230.185.13` 返回 `Permission denied (publickey,password)`，因此本轮未能直接执行 `pm2 logs waimao-api`、`cat -A /etc/nginx/sites-available/api.clientconnet.com` 或覆盖服务器配置。
+- 已更新仓库标准配置 `deploy/nginx-api.clientconnet.com`：去掉重复的 `Access-Control-Allow-Origin`，改为按请求 Origin 动态回显 `https://clientconnet.com` / `https://www.clientconnet.com`，避免域名解封后浏览器因重复 CORS 头继续失败。
+
+下一步优先级：
+
+1. 先解决域名接入拦截：给 `clientconnet.com` / `api.clientconnet.com` 做腾讯云大陆服务器备案接入，或把 API 迁到香港/海外服务器，或换用已备案域名。否则浏览器访问 `api.clientconnet.com` 会在到达 Nginx 前被关闭。
+2. 拿到 SSH 后再继续服务器内排查：`pm2 logs waimao-api --lines 30`、`pm2 status`、`sudo nginx -t`、`cat -A /etc/nginx/sites-available/api.clientconnet.com`。
+3. 域名恢复可达后，用仓库 `deploy/nginx-api.clientconnet.com` 覆盖服务器 Nginx 配置并 `sudo nginx -t && sudo systemctl reload nginx`，再测注册/登录。
+
+### 2026-05-08 明日调整计划：迁移 API 到海外节点
+
+当前决定：明天优先走海外节点方案，绕开大陆服务器未备案域名拦截，让 `api.clientconnet.com` 恢复可访问。
+
+重要判断：
+
+- Cloudflare 可以继续作为 DNS/CDN/代理层使用；但本项目后端是 Python FastAPI + PostgreSQL + Playwright Chromium + PM2 + 独立 Better Auth Node 服务，不适合直接部署到 Cloudflare Pages/Workers 这类 serverless/edge 环境。
+- 明天如果说“Cloudflare 海外服务器”，需要确认实际形态：最稳的是购买香港/海外 VPS（腾讯云香港、阿里云香港、AWS Lightsail、DigitalOcean、Hetzner 等均可），再把域名 DNS 放到 Cloudflare 管理。
+- PostgreSQL 建议跟后端放在同一台海外 VPS 本机，不要让海外后端继续连大陆腾讯云数据库，减少跨境网络和防火墙问题。
+- Vercel 前端可暂时不动；核心只迁移 API/Auth/DB，并保持域名仍为 `https://api.clientconnet.com`。
+
+明天迁移目标架构：
+
+```text
+clientconnet.com / www.clientconnet.com
+  -> Vercel 前端
+
+api.clientconnet.com
+  -> Cloudflare DNS
+  -> 香港/海外 VPS
+  -> Nginx 443
+     - /api/auth/* -> waimao-auth 127.0.0.1:8001
+     - /*          -> waimao-api  127.0.0.1:8000
+  -> PostgreSQL 本机 127.0.0.1:5432
+```
+
+明天执行顺序：
+
+1. 准备香港/海外 VPS：Ubuntu 24.04，建议至少 2C4G；安全组开放 22/80/443，5432 不对公网开放。
+2. 确认 SSH 可登录，并记录新服务器公网 IP、用户名、登录方式。
+3. 在新服务器安装系统依赖：PostgreSQL 17、Python 3.13、Node.js 22、PM2、Nginx、Certbot、Chromium/Playwright 依赖。
+4. 部署代码到 `/var/www/hyyskill`，创建生产 `.env`，执行 alembic 迁移。
+5. 启动 PM2：`waimao-api` 监听 127.0.0.1:8000，`waimao-auth` 监听 127.0.0.1:8001。
+6. Cloudflare DNS 将 `api.clientconnet.com` A 记录改到新海外 VPS IP；初次签 SSL 时建议先设为 DNS only，证书签好后再决定是否开启代理。
+7. 用 `deploy/nginx-api.clientconnet.com` 覆盖新服务器 Nginx 配置，执行 `sudo nginx -t && sudo systemctl reload nginx`。
+8. 验证：`curl https://api.clientconnet.com/health`、注册/登录、`/api/settings`、SSE pipeline、Resend webhook。
+
+需要同步确认的环境变量：
+
+- Vercel 保持：`NEXT_PUBLIC_API_URL=https://api.clientconnet.com`
+- Vercel 保持：`NEXT_PUBLIC_AUTH_URL=https://api.clientconnet.com`
+- 后端 `.env` 更新为新服务器本机数据库：`DATABASE_URL=postgresql+asyncpg://postgres:<新密码>@localhost:5432/waimao`
+- 后端 `.env` 保持：`CORS_ORIGINS=https://clientconnet.com,https://www.clientconnet.com`
+- 后端/Auth/Vercel 保持同一个 `BETTER_AUTH_SECRET`
+- Resend webhook 继续使用：`https://api.clientconnet.com/api/emails/resend/webhook`
+
+迁移完成前，旧大陆腾讯云 `111.230.185.13` 先保留，不删除，作为回滚参考和数据源。
+
+### 2026-05-09 香港节点迁移上线记录
+
+本轮已把生产 API/Auth/DB 从大陆腾讯云未备案受拦截路径迁移到腾讯云中国香港轻量应用服务器。
+
+已完成：
+
+- 新服务器：腾讯云轻量应用服务器中国香港，公网 IP `43.128.3.59`，Ubuntu Server 24.04 LTS，2C4G，70GB SSD。
+- 防火墙：放通 `22`、`80`、`443`；未放通 PostgreSQL `5432`，数据库仅本机访问。
+- 系统依赖：已安装 PostgreSQL 17、Node.js 22、PM2 7.0.1、Nginx、Certbot、Python 3.12 venv、Playwright Chromium 及系统依赖。
+- PostgreSQL：创建数据库 `waimao`，`postgres` 密码沿用生产 `.env` 配置，监听地址限定为 `127.0.0.1:5432`。
+- 代码部署：`/var/www/hyyskill` 已从 `https://github.com/aaronpan007/hyywaimaoappnew.git` 克隆，后端依赖 `pip install -e .`，`auth-service` 依赖 `npm install`。
+- 数据库迁移：`PYTHONUTF8=1 python -m alembic upgrade head` 成功执行到 `9b2c3d4e5f6a_add_better_auth_tables`。
+- PM2：`waimao-api` 监听 `127.0.0.1:8000`，`waimao-auth` 监听 `127.0.0.1:8001`；`pm2 save` + `pm2 startup` 已配置开机自启。
+- Cloudflare DNS：`api.clientconnet.com` A 记录已从旧大陆服务器 `111.230.185.13` 改为香港服务器 `43.128.3.59`，保持 `DNS only`。
+- HTTPS：Let's Encrypt 证书已签发到 `/etc/letsencrypt/live/api.clientconnet.com/`，Certbot timer 已启用。
+- Nginx：正式反代已启用；`/api/auth/*` -> `waimao-auth`，其余请求 -> `waimao-api`；HTTP 自动 301 到 HTTPS；SSE 保持 `proxy_buffering off` + 300s timeout。
+- 公网验证通过：
+  - `https://api.clientconnet.com/health` -> `{"status":"ok"}`
+  - `https://api.clientconnet.com/api/auth/ok` -> `{"ok":true}`
+  - `http://api.clientconnet.com/health` -> 301 到 HTTPS
+- Better Auth 500 已修复：`auth-service/index.js` 原先把 Node `Buffer` 的底层 `body.buffer` 直接传给 `Request`，导致 Better Auth 解析 JSON 时读到缓冲区外脏数据并报 `Unexpected token '/', "/// <refer"... is not valid JSON`。已改为 `body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)`，服务器已同步修改并重启 `waimao-auth`。
+- 注册接口直测通过：`POST https://api.clientconnet.com/api/auth/sign-up/email` 返回 200，并正确设置 `Domain=.clientconnet.com` 的 secure session cookie。
+- 浏览器端 `https://www.clientconnet.com` 已可进入工作台，说明注册/登录主链路恢复。
+- 登录后公司资料、客户名单、邮箱配置页面均可正常点击访问，业务 API 携带登录 cookie 的基础链路验证通过。
+
+需要继续验证：
+
+1. 做一轮轻量业务烟测：公司画像采集/读取、客户搜索或已有客户读取、SSE pipeline。
+2. Resend webhook 保持 `https://api.clientconnet.com/api/emails/resend/webhook`，需要做一次真实发送/回调确认。
+3. 清理测试注册账号（如有 `deploy.test.%@example.com`）。
+4. 迁移稳定后再决定是否关闭旧大陆腾讯云 `111.230.185.13`；短期先保留。

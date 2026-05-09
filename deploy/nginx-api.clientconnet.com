@@ -8,6 +8,12 @@ upstream waimao_auth {
     keepalive 64;
 }
 
+map $http_origin $cors_origin {
+    default "";
+    "https://clientconnet.com" $http_origin;
+    "https://www.clientconnet.com" $http_origin;
+}
+
 server {
     listen 80;
     server_name api.clientconnet.com;
@@ -25,10 +31,10 @@ server {
     client_max_body_size 20M;
 
     location /api/auth/ {
-        add_header Access-Control-Allow-Origin "https://www.clientconnet.com" always;
-        add_header Access-Control-Allow-Origin "https://clientconnet.com" always;
+        add_header Access-Control-Allow-Origin $cors_origin always;
+        add_header Vary "Origin" always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization, Cookie" always;
+        add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
         add_header Access-Control-Allow-Credentials "true" always;
         add_header Access-Control-Max-Age 86400 always;
 

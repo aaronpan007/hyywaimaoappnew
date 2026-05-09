@@ -130,13 +130,15 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const requestBody =
+      req.method !== "GET" && req.method !== "HEAD"
+        ? body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
+        : undefined;
+
     const webRequest = new Request(url, {
       method: req.method,
       headers,
-      body:
-        req.method !== "GET" && req.method !== "HEAD"
-          ? body.buffer
-          : undefined,
+      body: requestBody,
     });
 
     // Call Better Auth handler
