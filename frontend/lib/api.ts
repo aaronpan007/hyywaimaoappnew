@@ -112,6 +112,12 @@ export async function getProfile(): Promise<CompanyProfile | null> {
   }
 }
 
+export async function clearProfile(): Promise<void> {
+  await apiFetch<{ ok: boolean; cleared: boolean }>("/api/profile", {
+    method: "DELETE",
+  });
+}
+
 export async function exportProfileDocx(): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/profile/export`, {
     credentials: "include",
@@ -552,13 +558,17 @@ export function streamChat(
   signal?: AbortSignal,
   images?: string[],
   files?: { filename: string; data: string }[],
-  conversationId?: number
+  conversationId?: number,
+  mode?: string
 ): Promise<void> {
   return new Promise(async (resolve, reject) => {
     try {
       const body: Record<string, unknown> = { message };
       if (conversationId !== undefined) {
         body.conversationId = conversationId;
+      }
+      if (mode) {
+        body.mode = mode;
       }
       if (images && images.length > 0) {
         body.images = images;

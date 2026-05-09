@@ -8,7 +8,10 @@ The company profile is used in two different contexts:
 from __future__ import annotations
 
 import asyncio
+import base64
+import csv
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -67,10 +70,14 @@ PROFILE_SYSTEM_PROMPT = """你是一位资深 B2B 销售资料顾问，负责按
 
 画像质量标准：
 1. 不只总结官网首页，要把资料转成销售可用的认知底座：产品适合谁、解决什么问题、为什么可信、开发信里怎么说。
-2. case_studies 必须尽量从 Projects / Cases / Gallery / Portfolio / Applications / Solutions / Clients 等资料中深挖；每个案例优先补齐 project、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach。
-3. key_highlight 要能直接放进开发信，优先包含数字、地区、产品、交付结果；没有明确数据时不要编造，写可验证的简短亮点。
-4. customer_matching_guide 必须站在客户开发视角，说明哪类客户最值得开发、开发信优先强调什么、哪些话题要避免。
-5. profile_completeness 必须按已填字段真实评估：0.0-0.3=基础信息不足；0.3-0.6=有基本框架；0.6-0.8=较完整可用于开发信；0.8-1.0=覆盖关键维度。只要 products、case_studies、core_competencies 等已有实质内容，不得返回 0。
+2. 必须尽量补齐 skill 文档要求的关键维度：基础信息、主营产品、核心竞争力、适合开发的客户类型、成功案例、证书资质、合作模式、独特卖点、客户匹配建议、信息边界、metadata。
+3. case_studies 必须尽量从 Projects / Cases / Gallery / Portfolio / Applications / Solutions / Clients 等资料中深挖；资料充分时目标至少 10 个案例，同类行业/地区只保留最有代表性的 2-3 个；资料不足时不要编造，在 metadata.notes 说明待补充。
+4. 每个案例优先补齐 project、project_en、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach。
+5. key_highlight 要能直接放进开发信，优先包含数字、地区、产品、交付结果；没有明确数据时不要编造，写可验证的简短亮点。
+6. customer_matching_guide 必须站在客户开发视角，说明哪类客户最值得开发、开发信优先强调什么、哪些话题要避免。
+7. boundaries 必须防止后续开发信乱写，明确 claims_we_can_make、claims_we_cannot_make、sensitive_topics。
+8. metadata 必须记录 source_urls、source_documents、profile_completeness 和仍需确认的 notes。
+9. profile_completeness 必须按已填字段真实评估：0.0-0.3=基础信息不足；0.3-0.6=有基本框架；0.6-0.8=较完整可用于开发信；0.8-1.0=覆盖关键维度。只要 products、case_studies、core_competencies 等已有实质内容，不得返回 0。
 
 返回 JSON 结构：
 {
@@ -158,19 +165,22 @@ PROFILE_SYSTEM_PROMPT = """你是一位资深 B2B 销售资料顾问，负责按
   }
 }"""
 
-PROFILE_EDIT_SYSTEM_PROMPT = """你是企业资料编辑助手。用户会给你一份已有的公司画像 JSON 和修改指令，你需要严格按指令修改画像。
+PROFILE_EDIT_SYSTEM_PROMPT = """你是企业资料编辑助手。用户会给你一份已有的公司画像 JSON 和修改指令，你需要严格按 company-profile skill 的更新模式修改画像。
 
 核心规则：
-1. 用户要求删除/移除/不要/去掉/剔除 → 从返回 JSON 中彻底移除对应条目，不要保留
-2. 用户要求添加/补充 → 在对应位置添加新条目
-3. 用户要求修改/更正/改为 → 按指令修改
-4. 未被指令涉及的部分保持完全不变，一个字段都不要自行修改
-5. 如果画像很长，你只需要返回被修改的字段/数组，不需要返回完整画像
+1. 默认基于现有画像做增量补充/修正，不要从零重写，不要覆盖未涉及内容。
+2. 用户要求删除/移除/不要/去掉/剔除 → 从返回 JSON 中彻底移除对应条目，不要保留。
+3. 用户要求添加/补充 → 按 company-profile schema 在对应位置添加新条目，并尽量补齐销售可用字段。
+4. 用户要求修改/更正/改为 → 按指令修改。
+5. 未被指令涉及的部分保持完全不变，一个字段都不要自行修改。
+6. 如果修改 products、case_studies、core_competencies、target_customer_types、cooperation_models、customer_matching_guide、boundaries，必须按 skill 文档的完整度要求补齐字段；信息不足时留空或在 metadata.notes 标注待确认，不要编造。
+7. 如果画像很长，你只需要返回被修改的字段/数组，不需要返回完整画像。
    - 例如只修改了 certifications，就只返回 {"certifications": [...修改后的数组...]}
    - 修改了多个字段就都返回，如 {"certifications": [...], "one_line_intro": "..."}
-6. 前端展示字段用中文，english_profile 用英文
-7. 不编造用户没有提供的信息
-8. 直接返回 JSON，不要 Markdown 代码块"""
+8. 同步更新 metadata.updated_at；如修改影响完整度，更新 metadata.profile_completeness。
+9. 前端展示字段用中文，english_profile 用英文；修改英文开发信会用到的字段时同步更新 english_profile 对应部分。
+10. 不编造用户没有提供的信息。
+11. 直接返回 JSON，不要 Markdown 代码块"""
 
 
 async def _create_task_log(
@@ -938,6 +948,7 @@ def _build_user_prompt(params: dict, source_text: str, scraped_markdown: str, im
             parts.append("## 新的网页资料")
             parts.append(_compact_scraped_markdown(scraped_markdown))
         parts.append("")
+        parts.append("请按 company-profile skill 更新模式处理：只处理变化部分，保留未变化内容；新增案例/产品/客户类型/合作模式/边界字段时按完整 schema 补齐，信息不足写待确认，不要编造。")
         parts.append("请返回修改后的字段，只返回被修改的字段。格式如：{\"certifications\": [...], \"one_line_intro\": \"...\"}")
         parts.append("不要返回未修改的字段，不要返回完整画像，不要 Markdown 代码块。")
         return "\n".join(parts)
@@ -951,11 +962,13 @@ def _build_user_prompt(params: dict, source_text: str, scraped_markdown: str, im
 特别注意：
 - 前端展示字段请写中文，简洁自然。
 - english_profile 请写英文，给后续开发信使用。
+- 必须按 company-profile skill 的完整度标准输出：基础信息、主营产品、核心竞争力、适合开发的客户类型、案例、证书资质、合作模式、独特卖点、客户匹配建议、信息边界、metadata。
 - 如果抓取资料中包含 Projects、Cases、Case Studies、Gallery、Portfolio、Applications、Solutions、Clients 等页面，请优先挖掘项目案例。
 - 案例必须来自资料里的明确线索，不能编造客户名、国家、数量、认证或效果。
 - 请严格按 company-profile skill 的销售资料标准处理：不要只写公司简介，要输出后续客户开发可直接复用的产品、客户类型、核心优势、案例亮点、合作模式、信息边界。
-- case_studies 每条尽量补齐：project、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach；官网没有明确数据的字段留空或写入 metadata.notes，不能脑补。
+- case_studies 资料充分时目标至少 10 个；每条尽量补齐：project、project_en、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach；官网没有明确数据的字段留空或写入 metadata.notes，不能脑补。
 - customer_matching_guide 要具体到客户类型和开发信重点，不要写泛泛的“适合各类客户”。
+- boundaries 必须明确 claims_we_can_make、claims_we_cannot_make、sensitive_topics，避免后续开发信夸大或乱写。
 - metadata.profile_completeness 必须按字段完整度评估。只要已经识别出产品、案例、优势、客户类型等实质内容，不得返回 0。
 {image_block}
 === 用户原始输入 ===
@@ -978,6 +991,110 @@ IMAGE_DESC_PROMPT = """请仔细观察这张图片，提取以下信息（如果
 5. 合作模式、联系方式
 6. 行业类别
 请用中文简要描述你看到的所有内容，不要编造图片中不存在的。"""
+
+
+def _decode_uploaded_text(raw_bytes: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "gbk", "gb2312", "latin-1"):
+        try:
+            return raw_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
+def _extract_docx_text(raw_bytes: bytes) -> str:
+    try:
+        from docx import Document
+    except ImportError:
+        return ""
+
+    doc = Document(io.BytesIO(raw_bytes))
+    lines: list[str] = []
+    for paragraph in doc.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            lines.append(text)
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def _extract_xlsx_text(raw_bytes: bytes) -> str:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return ""
+
+    workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+    lines: list[str] = []
+    for sheet in workbook.worksheets[:5]:
+        lines.append(f"[Sheet: {sheet.title}]")
+        for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            if row_index > 200:
+                lines.append("[已截断：仅读取前 200 行]")
+                break
+            values = [str(value).strip() for value in row if value not in (None, "")]
+            if values:
+                lines.append(" | ".join(values))
+    return "\n".join(lines)
+
+
+def _extract_uploaded_files_text(files: list[dict] | None) -> str:
+    if not files:
+        return ""
+
+    parts: list[str] = []
+    for file in files:
+        filename = str(file.get("filename") or "uploaded-file")
+        data = str(file.get("data") or "")
+        if not data:
+            continue
+
+        ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+        try:
+            raw_bytes = base64.b64decode(data)
+        except Exception as exc:
+            parts.append(f"### 文件：{filename}\n[无法解码上传文件：{exc}]")
+            continue
+
+        text = ""
+        if ext in {"txt", "md", "csv"}:
+            text = _decode_uploaded_text(raw_bytes)
+            if ext == "csv" and text:
+                sample = []
+                reader = csv.reader(io.StringIO(text))
+                for index, row in enumerate(reader):
+                    if index >= 200:
+                        sample.append("[已截断：仅读取前 200 行]")
+                        break
+                    sample.append(" | ".join(cell.strip() for cell in row))
+                text = "\n".join(sample)
+        elif ext == "docx":
+            text = _extract_docx_text(raw_bytes)
+        elif ext in {"xlsx", "xlsm"}:
+            text = _extract_xlsx_text(raw_bytes)
+        else:
+            text = f"[暂不支持直接解析 .{ext or 'unknown'} 文件，请用户补充关键文字内容]"
+
+        if text:
+            parts.append(f"### 文件：{filename}\n{text[:12000]}")
+
+    return "\n\n".join(parts)[:30000]
+
+
+def _append_uploaded_file_text(params: dict, source_text: str) -> str:
+    file_text = _extract_uploaded_files_text(params.get("files") or [])
+    if not file_text:
+        return source_text
+
+    combined = "\n\n".join(
+        part for part in [source_text, "=== 用户上传文件提取内容 ===\n" + file_text] if part
+    )
+    params["source_text"] = combined
+    return combined
 
 
 def _describe_images_sync(images_b64: list[str]) -> str:
@@ -1055,6 +1172,7 @@ async def run_profile_pipeline(task_id: int, user_id: int, intent: dict) -> None
     """Run company-profile collection as a background task."""
     params = intent.get("params", {})
     source_text = params.get("source_text", "")
+    source_text = _append_uploaded_file_text(params, source_text)
     website = _normalize_url(params.get("url") or extract_url(source_text))
     if website:
         params["url"] = website
@@ -1347,6 +1465,7 @@ async def run_supplement_pipeline(task_id: int, user_id: int, intent: dict) -> N
     """
     params = intent.get("params", {})
     source_text = params.get("source_text", "")
+    source_text = _append_uploaded_file_text(params, source_text)
     existing_profile_id = params.get("existing_profile_id")
 
     if not existing_profile_id:
@@ -1531,6 +1650,7 @@ async def run_profile_quick_edit(task_id: int, user_id: int, intent: dict) -> No
     """
     params = intent.get("params", {})
     source_text = params.get("source_text", "")
+    source_text = _append_uploaded_file_text(params, source_text)
     existing_profile_id = params.get("existing_profile_id")
 
     if not existing_profile_id:

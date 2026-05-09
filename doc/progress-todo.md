@@ -115,8 +115,8 @@
 - [x] 增量更新模式（补充资料时基于已有画像 merge，而非覆盖）
 - [x] 前端画像展示页（产品/竞争力/案例/资质/合作模式/卖点/信息边界）
 - [x] 画像展示页列表截断区域添加"展开全部/收起"按钮
-- [x] "补充资料"按钮 → 新建 company-profile 会话 + 引导提示
-- [x] "重新采集"按钮 → 明确告知 AI 是 replace 模式
+- [x] "补充资料"按钮 → 新建 company-profile 会话 + 引导提示；默认基于现有画像增量补充/修改
+- [x] "重新采集"按钮已改为"清空公司资料" → 只清空当前画像，不再重新跑采集流程
 - [x] 前端图片上传（base64 resize → 后端 vision 模型解析）
 - [x] 画像导出 Word 文档
 - [x] 保存阶段按 profile_mode 分流（create/update/replace）
@@ -1218,3 +1218,87 @@ api.clientconnet.com
 
 1. 服务器拉取新代码并重启 `waimao-api` 后重新采集 PRANCE 官网，完整度不应再为 0%。
 2. 用 `pm2 logs waimao-api` 确认抓取日志中 `Company profile scrape succeeded: mode=playwright ... pages=6` 或相近信息，确认 Playwright 模式。
+
+### 2026-05-09 公司资料清空与补充资料更新模式修复
+
+本轮需求：
+
+- 公司资料页原"重新采集"语义过重，点击后不应重新跑刚刚的官网采集流程；需要改成明确的"清空公司资料"。
+- 点击"补充资料"后，后续输入默认是在现有公司画像上增量补充/修改，而不是依赖意图识别重新猜测。
+- 公司资料相关引导词、系统 prompt、更新 prompt 都要严格贴近 `waimao_toolkit_new/skills/company-profile/SKILL.md` 与 `references/json-schema.md` 的完整度标准。
+
+已修复：
+
+- `frontend/components/company-profile.tsx`：按钮从"重新采集"改成"清空公司资料"，图标改为 `Trash2`，红色危险操作样式。
+- `frontend/app/page.tsx`：新增清空确认弹窗；确认后调用 `clearProfile()`，成功后把公司资料状态置空，并刷新邮箱设置；不再发送"重新采集并覆盖"消息。
+- `frontend/lib/api.ts`：新增 `DELETE /api/profile` 客户端方法；`streamChat()` 新增 `mode` 入参并写入 `/api/chat` 请求体。
+- `backend/app/routers/profile.py` 与 `backend/app/services/profile_service.py`：新增 `DELETE /api/profile`，删除当前用户当前画像，并解除 `user_settings.profile_id` 对该画像的绑定；如果邮箱设置只是画像自动推荐且尚未确认，则同步清空推荐的发件人名、前缀、回复邮箱。
+- `backend/app/schemas/chat.py`、`backend/app/routers/chat.py`、`backend/app/services/chat_service.py`：聊天请求新增 `mode`；当 `mode=company-profile` 时强制进入 `company_profile`，默认 `profile_mode=update`，后端会加载当前画像作为 `existing_profile`，从而保证"补充资料"是在现有画像上修改。
+- `frontend/app/page.tsx`：公司画像会话中上传非图片文件但不输入文字时，默认消息改为"请根据上传资料补充公司画像"，不再误用"帮我写开发信"。
+- `backend/app/services/profile_pipeline_service.py`：公司画像 create/update/quick edit 会把上传的 `txt/md/csv/docx/xlsx/xlsm` 提取成文本并并入画像资料 prompt；PDF 解析暂未做，后续可补。
+- `backend/app/services/profile_pipeline_service.py`：强化 create/update prompt，补齐 company-profile skill 的完整度要求：基础信息、主营产品、核心竞争力、目标客户、至少尽量深挖 10 个案例、证书资质、合作模式、独特卖点、客户匹配建议、信息边界、metadata；更新模式明确只处理变化部分，保留未涉及内容。
+- `frontend/app/page.tsx`：新建公司画像与补充资料的前端引导文案同步改成 skill 文档口径，强调销售能力档案、补充时只改变化内容。
+
+本地验证：
+
+- 后端：`python -m compileall app` 通过（补完上传文件提取后已重新跑）。
+- 前端：`npm.cmd run build` 通过（补完上传文件提取后已重新跑）。直接执行 `npm run build` 会被当前 Windows PowerShell 执行策略拦截 `npm.ps1`，需用 `npm.cmd`。
+
+后续验证：
+
+1. 在已有公司画像页面点击"清空公司资料"并确认，应调用 `DELETE /api/profile`，页面回到空状态，且不出现 company-profile pipeline timeline。
+2. 清空后刷新页面，`GET /api/profile` 应返回空状态；邮箱配置不应继续绑定已删除的画像推荐。
+3. 重新建立画像后点击"补充资料"，发送"新增一个产品线..."或上传资料，应启动 `company-profile` 的 update/quick edit 流程，任务结果显示"公司画像已更新"，而不是创建客户搜索或普通聊天。
+4. 用一段包含案例/产品/资质的补充资料测试，检查输出字段是否符合 `company-profile` skill 的 schema 和完整度要求。
+
+下一步 TODO：
+
+- 为公司画像上传资料补 PDF 文本解析能力。目前 `txt/md/csv/docx/xlsx/xlsm` 会提取文本进入 company-profile prompt，PDF 暂不解析正文；建议后续用 `pypdf`/`pdfplumber`/`PyMuPDF` 增加 PDF 正文提取，并在前端上传提示里同步说明支持 PDF。
+
+### 2026-05-09 最新 AI 编程工具接手提示词
+
+如果换其他 AI 编程工具继续开发，以这段为最新上下文；前面 2026-05-08 的旧登录/Nginx 卡点记录已被后续香港节点迁移修复覆盖：
+
+```text
+请先阅读 doc/progress-todo.md、doc/deploy.md，以及 waimao_toolkit_new/skills/company-profile/SKILL.md 和 references/json-schema.md。
+
+项目是 AI 外贸员智能体：
+- 前端：Next.js 14 + TypeScript + Tailwind，目录 frontend/
+- 后端：FastAPI + SQLAlchemy async + PostgreSQL，目录 backend/
+- Auth：auth-service/ 独立 Better Auth Node 服务
+- 生产 API/Auth/DB 已迁移到腾讯云香港服务器 43.128.3.59；api.clientconnet.com 走 Nginx -> waimao-api/waimao-auth，公网 /health 和 /api/auth/ok 已验证通过。
+
+当前最新公司资料逻辑：
+- 公司资料页已有画像时，按钮是"补充资料"、"清空公司资料"、"导出画像"。
+- "清空公司资料"只调用 DELETE /api/profile，删除当前用户当前画像并解除邮箱设置的 profile_id 绑定，不会启动重新采集 pipeline。
+- "补充资料"会创建 mode=company-profile 的会话；前端 streamChat 会把 mode 传给后端；后端 start_chat 收到 mode=company-profile 后强制 action=company_profile、profile_mode=update，并加载当前画像作为 existing_profile。
+- 公司资料会话上传非图片文件时，前端默认消息是"请根据上传资料补充公司画像"；后端画像 pipeline 会提取 txt/md/csv/docx/xlsx/xlsm 文本并放进 prompt，PDF 暂未解析。
+- 公司资料 create/update prompt 必须严格遵循 company-profile skill：产品、优势、目标客户、案例、资质、合作模式、卖点、customer_matching_guide、boundaries、metadata 都要尽量完整；案例资料充分时目标至少 10 个，不能编造缺失信息。
+
+明确待办：
+- 公司画像上传资料的 PDF 解析还没做。后续需要在 backend/app/services/profile_pipeline_service.py 的上传文件提取函数中增加 PDF 正文提取，并确认前端上传格式提示与后端能力一致。
+
+本轮涉及文件：
+- frontend/components/company-profile.tsx
+- frontend/components/chat-area.tsx
+- frontend/app/page.tsx
+- frontend/lib/api.ts
+- backend/app/schemas/chat.py
+- backend/app/routers/chat.py
+- backend/app/services/chat_service.py
+- backend/app/routers/profile.py
+- backend/app/services/profile_service.py
+- backend/app/services/profile_pipeline_service.py
+
+下一步建议先做验证：
+1. npm.cmd run build（frontend/；PowerShell 下不要直接用 npm.ps1）
+2. python -m compileall app（backend/）
+3. 登录后在公司资料页点击"清空公司资料"，确认无 pipeline 启动且页面回到空状态。
+4. 重新建立画像后点击"补充资料"，输入新增产品/案例，确认走 company-profile update/quick edit。
+
+注意：
+- 不要再把"重新采集"作为公司资料页默认入口；需要重跑官网采集时，应由用户在公司画像会话中明确提供官网 URL 或新的资料。
+- 不要修改 backend/app/services/pipeline_service.py。
+- 不要引入 lead_lists 新表。
+- 每次做完小任务继续更新 doc/progress-todo.md。
+```

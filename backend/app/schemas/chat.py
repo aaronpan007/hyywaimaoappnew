@@ -11,6 +11,7 @@ class FileUpload(CamelModel):
 class ChatRequest(CamelModel):
     message: str
     conversation_id: int | None = None
+    mode: str | None = None
     images: list[str] | None = None
     files: list[FileUpload] | None = None
 

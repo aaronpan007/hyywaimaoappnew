@@ -3,10 +3,11 @@ from typing import Any
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company_profile import CompanyProfile
+from app.models.user_settings import UserSettings
 from app.schemas.profile import CompanyProfileResponse
 from app.services.settings_service import ensure_recommended_email_settings
 from app.utils.db_sequences import sync_company_profiles_id_sequence
@@ -148,6 +149,35 @@ async def update_profile(
     await db.refresh(cp)
     await ensure_recommended_email_settings(db, cp.user_id, cp.id, profile_data)
     return _profile_data_to_response(cp)
+
+
+async def clear_current_profile(db: AsyncSession, user_id: int) -> bool:
+    result = await db.execute(
+        select(CompanyProfile.id)
+        .where(CompanyProfile.user_id == user_id, CompanyProfile.is_current == True)  # noqa: E712
+    )
+    profile_ids = list(result.scalars().all())
+    if not profile_ids:
+        return False
+
+    settings_result = await db.execute(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    )
+    user_settings = settings_result.scalar_one_or_none()
+    if user_settings is not None and user_settings.profile_id in profile_ids:
+        was_only_recommended = user_settings.confirmed_at is None
+        user_settings.profile_id = None
+        if was_only_recommended:
+            user_settings.sender_name = ""
+            user_settings.from_email_prefix = ""
+            user_settings.reply_to_email = ""
+
+    await db.execute(
+        delete(CompanyProfile)
+        .where(CompanyProfile.user_id == user_id, CompanyProfile.id.in_(profile_ids))
+    )
+    await db.commit()
+    return True
 
 
 async def export_current_profile_docx(db: AsyncSession, user_id: int) -> tuple[bytes, str] | None:

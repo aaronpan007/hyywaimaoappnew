@@ -10,6 +10,7 @@ import {
   getSettings,
   updateSettings,
   getProfile,
+  clearProfile,
   exportProfileDocx,
   exportLeadsExcel,
   exportEmailsExcel,
@@ -205,7 +206,7 @@ export default function Home() {
             id: `profile-guide-${Date.now()}`,
             role: "assistant",
             content:
-              "我来帮您建立公司画像。请先提供这些信息中的任意几项：\n\n1. 公司全称或品牌名\n2. 官网 URL\n3. 主营产品/服务\n4. 核心优势、资质认证、合作模式\n5. 典型案例、产品册、公司介绍文件\n\n您可以直接粘贴官网，也可以点击输入框左侧的附件按钮上传资料。",
+              "我来帮您建立公司的销售能力档案。这份档案会作为后续客户匹配和开发信的基础。\n\n请先提供这些信息中的任意几项：\n\n1. 公司全称、所在地、行业、规模\n2. 官网 URL\n3. 主营产品/服务和适合客户\n4. 核心优势、资质认证、合作模式\n5. 典型案例、项目页、产品册或公司介绍文件\n\n您可以直接粘贴官网，也可以点击输入框左侧的附件按钮上传资料。",
             timestamp: "刚刚",
           },
         ];
@@ -215,7 +216,7 @@ export default function Home() {
             id: `supplement-guide-${Date.now()}`,
             role: "assistant",
             content:
-              "好的，您想对公司画像进行补充或修改。请告诉我您想补充的内容，例如：\n\n1. 补充新的产品或服务线\n2. 更新核心优势或资质认证\n3. 添加更多成功案例\n4. 修正已有信息中的错误\n5. 补充目标客户类型或合作模式\n\n您可以直接输入文字描述，也可以上传相关文件。",
+              "好的，我会基于现有公司画像进行补充或修改，只处理您提供的变化内容，未涉及的部分会保留。\n\n您可以补充或修改：\n\n1. 新的产品或服务线\n2. 核心优势、证书资质或合作模式\n3. 成功案例、项目规模、交付结果\n4. 目标客户类型和开发信重点\n5. 信息边界：哪些能说、哪些不能乱说\n\n您可以直接输入文字描述，也可以上传相关文件。",
             timestamp: "刚刚",
           },
         ];
@@ -606,6 +607,8 @@ export default function Home() {
 
       // Read image files as base64 for the backend to process with vision model
       // Resize to max 1200px on longest side to reduce upload size
+      const activeSessionBeforeSend = getActiveSession();
+      const activeMode = activeSessionBeforeSend?.mode || "general";
       let imageBase64List: string[] = [];
       let backendFiles: { filename: string; data: string }[] | undefined;
       let backendMessage = message;
@@ -655,7 +658,7 @@ export default function Home() {
                 })
             )
           );
-          backendMessage = message || "帮我写开发信";
+          backendMessage = message || (activeMode === "company-profile" ? "请根据上传资料补充公司画像" : "帮我写开发信");
         } else {
           backendMessage = message;
         }
@@ -682,7 +685,9 @@ export default function Home() {
       const sessionId = sid; // capture for closures
 
       // Get existing DB conversation ID for this session
-      const existingDbId = sessions.find((s) => s.id === sid)?.dbId;
+      const currentSession = sessions.find((s) => s.id === sid);
+      const existingDbId = currentSession?.dbId;
+      const sessionMode = currentSession?.mode || activeMode;
 
       // Add user message
       const userMsg: ChatMessage = {
@@ -938,10 +943,11 @@ export default function Home() {
         controller.signal,
         imageBase64List.length > 0 ? imageBase64List : undefined,
         backendFiles,
-        existingDbId
+        existingDbId,
+        sessionMode
       );
     },
-    [activeSessionId, handleCreateSession, updateMessage, updateTimelineStep, updateSessionMessages, completeTimeline, view]
+    [activeSessionId, getActiveSession, handleCreateSession, updateMessage, updateTimelineStep, updateSessionMessages, completeTimeline, view, sessions]
   );
 
   // ─── Other handlers ──────────────────────────────────────────────
@@ -988,14 +994,21 @@ export default function Home() {
     handleCreateSession("补充资料");
   }, [handleCreateSession]);
 
-  const handleRecollect = useCallback(() => {
-    const website = companyProfile?.website || companyProfile?.profileData?.website;
-    if (website) {
-      handleSendMessage(`请基于官网 ${website} 重新采集并覆盖公司画像`, undefined, true);
+  const handleClearProfile = useCallback(async () => {
+    if (!window.confirm("确定要清空当前公司资料吗？清空后不会自动重新采集，后续可以重新建立公司画像。")) {
       return;
     }
-    handleCreateSession("重新采集公司画像");
-  }, [companyProfile, handleCreateSession, handleSendMessage]);
+    try {
+      await clearProfile();
+      setCompanyProfile(null);
+      const settings = await getSettings();
+      setEmailSettings(settings);
+      setView("company-profile");
+      setActiveNav("company-profile");
+    } catch (err: any) {
+      alert(`清空失败：${err.message || "请稍后重试"}`);
+    }
+  }, []);
 
   const handleExportProfile = useCallback(async () => {
     try {
@@ -1385,7 +1398,7 @@ export default function Home() {
           onBackToChat={handleBackToChat}
           onStartCollect={handleStartCollect}
           onSupplement={handleSupplement}
-          onRecollect={handleRecollect}
+          onClearProfile={handleClearProfile}
           onExportProfile={handleExportProfile}
           onSaveEmailSettings={handleSaveEmailSettings}
           onGenerateEmails={handleGenerateEmailsFromList}

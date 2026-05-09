@@ -73,13 +73,23 @@ SSE_HEADERS = {
 }
 
 
-async def start_chat(message: str, db, user_id: int, images: list[str] | None = None, files: list[dict] | None = None, conversation_id: int | None = None) -> dict:
+async def start_chat(
+    message: str,
+    db,
+    user_id: int,
+    images: list[str] | None = None,
+    files: list[dict] | None = None,
+    conversation_id: int | None = None,
+    mode: str | None = None,
+) -> dict:
     """Classify a chat message and either return chat, confirm, or pipeline."""
+    chat_mode = (mode or "general").strip()
+
     # Create conversation if not provided
     conv_id = conversation_id
     if conv_id is None:
         title = message[:20] + "..." if len(message) > 20 else message
-        conv = await create_conversation(db, user_id, title)
+        conv = await create_conversation(db, user_id, title, mode=chat_mode)
         conv_id = conv.id
 
     # Save user message
@@ -94,6 +104,11 @@ async def start_chat(message: str, db, user_id: int, images: list[str] | None = 
     action = intent["action"]
     params = intent["params"] if isinstance(intent.get("params"), dict) else {}
     reply = intent.get("reply", "")
+
+    if chat_mode == "company-profile":
+        action = "company_profile"
+        params.setdefault("profile_mode", "update")
+        reply = "好的，正在根据现有公司画像补充或修改资料..."
 
     # Pass uploaded images to pipeline params if present
     if images:
@@ -121,8 +136,8 @@ async def start_chat(message: str, db, user_id: int, images: list[str] | None = 
                 "type": "chat",
                 "reply": (
                     "可以，我先帮您准备公司画像采集。请直接发公司官网 URL，"
-                    "或补充公司名称、主营产品、核心优势、资质认证、典型案例等资料；"
-                    "我拿到有效资料后再开始采集和整理。"
+                    "或补充公司名称/所在地/行业、主营产品、核心优势、资质认证、典型案例、合作模式、目标客户等资料；"
+                    "我会按 company-profile skill 的完整度标准整理成后续客户匹配和开发信可直接调用的销售能力档案。"
                 ),
                 "conversation_id": conv_id,
             }

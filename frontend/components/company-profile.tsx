@@ -21,9 +21,9 @@ import {
   MapPin,
   Package,
   Plus,
-  RefreshCw,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Users,
   XCircle,
 } from "lucide-react";
@@ -34,7 +34,7 @@ interface CompanyProfilePageProps {
   onBack: () => void;
   onStartCollect: () => void;
   onSupplement: () => void;
-  onRecollect: () => void;
+  onClearProfile: () => void;
   onExport: () => void;
 }
 
@@ -165,7 +165,7 @@ export default function CompanyProfilePage({
   onBack,
   onStartCollect,
   onSupplement,
-  onRecollect,
+  onClearProfile,
   onExport,
 }: CompanyProfilePageProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -229,11 +229,11 @@ export default function CompanyProfilePage({
               <span>补充资料</span>
             </button>
             <button
-              onClick={onRecollect}
-              className="h-9 px-3 rounded-lg border border-text-border text-[13px] text-text-secondary hover:bg-gray-50 transition-colors inline-flex items-center gap-1.5"
+              onClick={onClearProfile}
+              className="h-9 px-3 rounded-lg border border-red-200 text-[13px] text-red-600 hover:bg-red-50 transition-colors inline-flex items-center gap-1.5"
             >
-              <RefreshCw size={14} />
-              <span>重新采集</span>
+              <Trash2 size={14} />
+              <span>清空公司资料</span>
             </button>
             <button
               onClick={onExport}

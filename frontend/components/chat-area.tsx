@@ -36,7 +36,7 @@ interface ChatAreaProps {
   onBackToChat: () => void;
   onStartCollect: () => void;
   onSupplement: () => void;
-  onRecollect: () => void;
+  onClearProfile: () => void;
   onExportProfile: () => void;
   onSaveEmailSettings: (settings: EmailSettings) => void;
   onGenerateEmails?: (leadIds: number[], language: string) => void;
@@ -77,7 +77,7 @@ export default function ChatArea({
   onBackToChat,
   onStartCollect,
   onSupplement,
-  onRecollect,
+  onClearProfile,
   onExportProfile,
   onSaveEmailSettings,
   onGenerateEmails,
@@ -138,7 +138,7 @@ export default function ChatArea({
             onBack={onBackToChat}
             onStartCollect={onStartCollect}
             onSupplement={onSupplement}
-            onRecollect={onRecollect}
+            onClearProfile={onClearProfile}
             onExport={onExportProfile}
           />
         </div>

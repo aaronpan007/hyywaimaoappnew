@@ -18,7 +18,7 @@ async def chat(req: ChatRequest, db: DBSession, user_id: CurrentUser):
     try:
         result = await chat_service.start_chat(
             req.message, db, user_id, images=req.images, files=files_data,
-            conversation_id=req.conversation_id,
+            conversation_id=req.conversation_id, mode=req.mode,
         )
     except chat_service.ConfigRequiredError as e:
         return StreamingResponse(

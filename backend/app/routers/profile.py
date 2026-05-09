@@ -45,3 +45,9 @@ async def update_profile(db: DBSession, profile_id: int, profile_data: dict):
     if profile is None:
         return {"detail": "Profile not found"}
     return profile
+
+
+@router.delete("/profile")
+async def clear_profile(db: DBSession, user: CurrentUser):
+    cleared = await profile_service.clear_current_profile(db, user)
+    return {"ok": True, "cleared": cleared}
