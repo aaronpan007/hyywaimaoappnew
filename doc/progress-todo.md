@@ -1244,6 +1244,22 @@ api.clientconnet.com
 - 后端：`python -m compileall app` 通过（补完上传文件提取后已重新跑）。
 - 前端：`npm.cmd run build` 通过（补完上传文件提取后已重新跑）。直接执行 `npm run build` 会被当前 Windows PowerShell 执行策略拦截 `npm.ps1`，需用 `npm.cmd`。
 
+GitHub / 服务器状态：
+
+- 已推送到 GitHub `origin/main`：提交 `7bf224e`（`Fix company profile clear and update flow`）。
+- 当前本地机器无法直接 SSH 到香港服务器：`ubuntu@43.128.3.59` 和 `root@43.128.3.59` 均返回 `Permission denied (publickey,password)`，因此服务器尚未由本地完成 `git pull` 和重启。
+- 拿到服务器登录权限后执行：
+  ```bash
+  cd /var/www/hyyskill
+  git pull origin main
+  cd backend
+  python -m compileall app
+  pm2 restart waimao-api
+  curl -s https://api.clientconnet.com/health
+  pm2 logs waimao-api --lines 50 --nostream
+  ```
+- 前端由 Vercel 关联 GitHub 时，推送 `main` 后通常会自动部署；仍需在 Vercel 控制台确认本次提交的部署状态。
+
 后续验证：
 
 1. 在已有公司画像页面点击"清空公司资料"并确认，应调用 `DELETE /api/profile`，页面回到空状态，且不出现 company-profile pipeline timeline。
