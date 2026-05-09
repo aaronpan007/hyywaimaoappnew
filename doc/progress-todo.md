@@ -1180,3 +1180,22 @@ api.clientconnet.com
 
 1. 等 Vercel 部署新前端后，再点击“开始采集公司画像”，应只出现引导，不再出现 0% 空 pipeline。
 2. 在公司画像会话里发送官网 URL，确认 timeline 进入“抓取官网资料”，并通过 `pm2 logs waimao-api` 检查是否出现 `[浏览器模式]`。
+
+### 2026-05-09 公司画像官网 0 页面抓取修复
+
+烟测发现：
+
+- 用户发送 `http://www.chinaaiyi.com/这是我的官网` 这类 URL 后接中文说明的消息时，旧 URL 正则存在把 URL 后中文一起吞进去的风险。
+- company-profile 抓取器返回空列表时，后端仍把 step 2 标记为“已抓取 0 个官网页面，并优先深挖案例/项目页”，随后继续让 AI 仅凭 URL/极少信息生成低完整度画像。
+- 本地直连 `http://www.chinaaiyi.com/` 返回 503，`https://www.chinaaiyi.com/` 存在 TLS 信任问题，说明该站点本身对自动抓取/HTTPS 访问不稳定；需要后端把这种情况标成抓取失败，而不是成功 0 页。
+
+已修复：
+
+- `backend/app/services/profile_pipeline_service.py` 与 `backend/app/services/intent_router.py`：URL 提取改为 URL-safe 字符集，避免吞掉 URL 后的中文说明。
+- `profile_pipeline_service._scrape_website()`：空页面列表不再算成功；会记录抓取模式（Playwright/requests）、URL、页面数，并在失败时自动尝试 HTTP/HTTPS alternate scheme。
+- 如果官网抓取失败且用户没有提供除 URL 外的有效资料，不再保存低质量画像，而是让任务失败并提示用户确认网址可访问或补充公司介绍/产品/案例资料。
+
+后续验证：
+
+1. 服务器拉取新代码并重启 `waimao-api` 后，再用同一官网测试，应看到明确的“官网抓取失败”提示或抓到至少 1 个页面，不应再出现“已抓取 0 个官网页面”。
+2. 通过 `pm2 logs waimao-api --lines 300 --nostream | grep -E "Company profile scrape|浏览器模式|requests模式|首页抓取失败"` 确认实际抓取模式和失败原因。

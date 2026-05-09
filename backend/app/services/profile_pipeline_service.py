@@ -219,7 +219,7 @@ def extract_url(text: str) -> str:
     """Extract the first website URL from a user message."""
     if not text:
         return ""
-    match = re.search(r"https?://[^\s，。；,;]+", text)
+    match = re.search(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", text)
     if match:
         return match.group(0).rstrip(").,;，。；")
     domain_match = re.search(
@@ -250,17 +250,54 @@ def _load_scraper_module():
     return module
 
 
+def _scrape_once(scraper, url: str, max_pages: int) -> list[dict]:
+    if scraper.HAS_PLAYWRIGHT:
+        return scraper.scrape_website_playwright(url, max_pages=max_pages)
+    return scraper.scrape_website_requests(url, max_pages=max_pages)
+
+
+def _scrape_candidates(url: str) -> list[str]:
+    normalized_url = _normalize_url(url)
+    candidates = [normalized_url]
+    parsed = urlparse(normalized_url)
+    if parsed.scheme in {"http", "https"}:
+        alternate_scheme = "https" if parsed.scheme == "http" else "http"
+        alternate = parsed._replace(scheme=alternate_scheme).geturl()
+        if alternate not in candidates:
+            candidates.append(alternate)
+    return candidates
+
+
 def _scrape_website(url: str, max_pages: int = 6) -> tuple[str, list[str]]:
     """Scrape a website using the company-profile skill scraper functions."""
     scraper = _load_scraper_module()
-    normalized_url = _normalize_url(url)
-    if scraper.HAS_PLAYWRIGHT:
-        pages_data = scraper.scrape_website_playwright(normalized_url, max_pages=max_pages)
-    else:
-        pages_data = scraper.scrape_website_requests(normalized_url, max_pages=max_pages)
-    markdown = scraper.format_as_markdown(pages_data)
-    urls = [p.get("url", "") for p in pages_data if p.get("url")]
-    return markdown, urls
+    mode = "playwright" if scraper.HAS_PLAYWRIGHT else "requests"
+    last_error: Exception | None = None
+
+    for candidate in _scrape_candidates(url):
+        try:
+            pages_data = _scrape_once(scraper, candidate, max_pages)
+            if not pages_data:
+                raise RuntimeError(f"scraper returned 0 pages for {candidate}")
+            markdown = scraper.format_as_markdown(pages_data)
+            urls = [p.get("url", "") for p in pages_data if p.get("url")]
+            logger.info(
+                "Company profile scrape succeeded: mode=%s url=%s pages=%d",
+                mode,
+                candidate,
+                len(urls),
+            )
+            return markdown, urls
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Company profile scrape attempt failed: mode=%s url=%s error=%s",
+                mode,
+                candidate,
+                exc,
+            )
+
+    raise RuntimeError(f"官网没有成功抓取任何页面：{last_error}")
 
 
 def _compact_scraped_markdown(markdown: str, max_chars: int = 12000) -> str:
@@ -1021,6 +1058,17 @@ async def run_profile_pipeline(task_id: int, user_id: int, intent: dict) -> None
                         message="官网抓取失败，改用用户输入继续整理",
                         progress=100,
                     )
+                    user_material = (source_text or "").replace(website, "").strip()
+                    user_material = re.sub(
+                        r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+",
+                        "",
+                        user_material,
+                    ).strip(" ，。,.!！?？：:")
+                    if not user_material and not image_descriptions:
+                        raise RuntimeError(
+                            "官网抓取失败，且没有可用于整理画像的补充资料。"
+                            "请确认网址可从服务器访问，或补充公司介绍、产品、优势、案例等文字资料。"
+                        )
             else:
                 await _update_task_log(
                     db,

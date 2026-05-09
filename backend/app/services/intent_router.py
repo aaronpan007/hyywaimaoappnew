@@ -124,7 +124,7 @@ GENERAL_KEYWORD_MAP = {
 
 
 def _extract_url(text: str) -> str:
-    match = re.search(r"https?://[^\s，。；,;]+", text or "")
+    match = re.search(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", text or "")
     if match:
         return match.group(0).rstrip(").,;，。")
     domain_match = re.search(
