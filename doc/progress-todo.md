@@ -1199,3 +1199,22 @@ api.clientconnet.com
 
 1. 服务器拉取新代码并重启 `waimao-api` 后，再用同一官网测试，应看到明确的“官网抓取失败”提示或抓到至少 1 个页面，不应再出现“已抓取 0 个官网页面”。
 2. 通过 `pm2 logs waimao-api --lines 300 --nostream | grep -E "Company profile scrape|浏览器模式|requests模式|首页抓取失败"` 确认实际抓取模式和失败原因。
+
+### 2026-05-09 公司画像完整度与 prompt 加强
+
+烟测发现：
+
+- PRANCE 官网画像显示“已抓取 6 个官网页面”，并识别出产品线 4 个、案例 2 个，但 timeline 和结果卡片仍显示完整度 0%。
+- 原因：后端完全信任模型返回的 `metadata.profile_completeness`。当模型漏填或返回 0 时，即使其他字段已有实质内容，也会显示 0%。
+- 当前 company-profile pipeline 使用了 toolkit 的 `scrape_website.py` 抓取器和独立 prompt，但 prompt 是线上集成版的精简提示，不是逐字照搬 `SKILL.md` 的完整 Phase 3 标准。
+
+已修复：
+
+- `backend/app/services/profile_pipeline_service.py` 新增后端完整度兜底评分：基于基础字段、products、core_competencies、target_customer_types、case_studies、certifications、cooperation_models、unique_selling_points、customer_matching_guide、boundaries、english_profile、source_urls 自动计算保守完整度。
+- 最终完整度改为 `max(模型自评, 后端字段兜底评分)`；本地样例（4 产品 + 2 案例 + 6 来源）从 0% 变为约 48%。
+- 强化 `PROFILE_SYSTEM_PROMPT` 与用户 prompt，补入 company-profile skill 的销售资料标准、案例字段要求、customer_matching_guide 要求、profile_completeness 评分规则。
+
+后续验证：
+
+1. 服务器拉取新代码并重启 `waimao-api` 后重新采集 PRANCE 官网，完整度不应再为 0%。
+2. 用 `pm2 logs waimao-api` 确认抓取日志中 `Company profile scrape succeeded: mode=playwright ... pages=6` 或相近信息，确认 Playwright 模式。

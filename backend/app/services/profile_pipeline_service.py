@@ -65,6 +65,13 @@ PROFILE_SYSTEM_PROMPT = """你是一位资深 B2B 销售资料顾问，负责按
 6. boundaries 必须明确写出可以说、不能乱说、敏感话题。
 7. 输出必须是严格 JSON，不要 Markdown 代码块，不要额外解释。
 
+画像质量标准：
+1. 不只总结官网首页，要把资料转成销售可用的认知底座：产品适合谁、解决什么问题、为什么可信、开发信里怎么说。
+2. case_studies 必须尽量从 Projects / Cases / Gallery / Portfolio / Applications / Solutions / Clients 等资料中深挖；每个案例优先补齐 project、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach。
+3. key_highlight 要能直接放进开发信，优先包含数字、地区、产品、交付结果；没有明确数据时不要编造，写可验证的简短亮点。
+4. customer_matching_guide 必须站在客户开发视角，说明哪类客户最值得开发、开发信优先强调什么、哪些话题要避免。
+5. profile_completeness 必须按已填字段真实评估：0.0-0.3=基础信息不足；0.3-0.6=有基本框架；0.6-0.8=较完整可用于开发信；0.8-1.0=覆盖关键维度。只要 products、case_studies、core_competencies 等已有实质内容，不得返回 0。
+
 返回 JSON 结构：
 {
   "company_name": "",
@@ -401,6 +408,73 @@ def _normalize_completeness(value) -> float:
     return max(0.0, min(score, 1.0))
 
 
+def _has_text(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        return any(_has_text(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_text(v) for v in value)
+    return False
+
+
+def _nonempty_count(value) -> int:
+    return sum(1 for item in _ensure_list(value) if _has_text(item))
+
+
+def _derive_profile_completeness(profile: dict) -> float:
+    """Derive a conservative completeness score from populated profile fields."""
+    if not isinstance(profile, dict):
+        return 0.0
+
+    score = 0.0
+
+    basic_fields = [
+        "company_name",
+        "one_line_intro",
+        "full_intro",
+        "industry",
+        "location",
+        "website",
+        "scale",
+        "established",
+    ]
+    basic_filled = sum(1 for key in basic_fields if _has_text(profile.get(key)))
+    score += min(0.2, basic_filled * 0.025)
+
+    products = _nonempty_count(profile.get("products"))
+    competencies = _nonempty_count(profile.get("core_competencies"))
+    target_types = _nonempty_count(profile.get("target_customer_types"))
+    cases = _nonempty_count(profile.get("case_studies"))
+    certs = _nonempty_count(profile.get("certifications"))
+    models = _nonempty_count(profile.get("cooperation_models"))
+    usps = _nonempty_count(profile.get("unique_selling_points"))
+    guide = _nonempty_count(profile.get("customer_matching_guide"))
+
+    score += min(0.18, products * 0.045)
+    score += min(0.14, competencies * 0.04 + usps * 0.02)
+    score += min(0.12, target_types * 0.04)
+    score += min(0.18, cases * 0.06)
+    score += min(0.1, guide * 0.04)
+    score += min(0.08, certs * 0.025 + models * 0.03)
+
+    boundaries = profile.get("boundaries") if isinstance(profile.get("boundaries"), dict) else {}
+    boundary_filled = sum(1 for key in ("claims_we_can_make", "claims_we_cannot_make", "sensitive_topics") if _has_text(boundaries.get(key)))
+    score += min(0.05, boundary_filled * 0.018)
+
+    english = profile.get("english_profile") if isinstance(profile.get("english_profile"), dict) else {}
+    if _has_text(english.get("one_line_intro")) or _has_text(english.get("products")):
+        score += 0.05
+
+    metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+    if _has_text(metadata.get("source_urls")):
+        score += 0.05
+
+    return round(max(0.0, min(score, 0.95)), 2)
+
+
 def _compact_join(items: list) -> str:
     values = []
     for item in items:
@@ -466,9 +540,10 @@ def _normalize_profile(profile: dict, website: str, source_urls: list[str]) -> d
     metadata["updated_at"] = now
     metadata["source_urls"] = list(dict.fromkeys(_ensure_list(metadata.get("source_urls")) + source_urls))
     metadata.setdefault("source_documents", [])
-    metadata["profile_completeness"] = _normalize_completeness(
+    ai_completeness = _normalize_completeness(
         metadata.get("profile_completeness", 0.0)
     )
+    metadata["profile_completeness"] = max(ai_completeness, _derive_profile_completeness(profile))
     metadata.setdefault("notes", "")
     profile["metadata"] = metadata
 
@@ -878,6 +953,10 @@ def _build_user_prompt(params: dict, source_text: str, scraped_markdown: str, im
 - english_profile 请写英文，给后续开发信使用。
 - 如果抓取资料中包含 Projects、Cases、Case Studies、Gallery、Portfolio、Applications、Solutions、Clients 等页面，请优先挖掘项目案例。
 - 案例必须来自资料里的明确线索，不能编造客户名、国家、数量、认证或效果。
+- 请严格按 company-profile skill 的销售资料标准处理：不要只写公司简介，要输出后续客户开发可直接复用的产品、客户类型、核心优势、案例亮点、合作模式、信息边界。
+- case_studies 每条尽量补齐：project、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach；官网没有明确数据的字段留空或写入 metadata.notes，不能脑补。
+- customer_matching_guide 要具体到客户类型和开发信重点，不要写泛泛的“适合各类客户”。
+- metadata.profile_completeness 必须按字段完整度评估。只要已经识别出产品、案例、优势、客户类型等实质内容，不得返回 0。
 {image_block}
 === 用户原始输入 ===
 {user_message or source_text or "未提供"}
