@@ -40,21 +40,41 @@ export default function Sidebar({
   onSignOut,
 }: SidebarProps) {
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = React.useState("");
+  const menuRootRef = React.useRef<HTMLDivElement>(null);
 
   const handleRename = (item: ChatHistoryItem) => {
     setOpenMenuId(null);
-    const nextTitle = window.prompt("重命名聊天记录", item.title)?.trim();
+    setEditingId(item.id);
+    setEditingTitle(item.title);
+  };
+
+  const handleDelete = (item: ChatHistoryItem) => {
+    setOpenMenuId(null);
+    if (editingId === item.id) {
+      setEditingId(null);
+    }
+    onDeleteChat(item.id);
+  };
+
+  const finishRename = (item: ChatHistoryItem) => {
+    const nextTitle = editingTitle.trim();
+    setEditingId(null);
     if (nextTitle && nextTitle !== item.title) {
       onRenameChat(item.id, nextTitle);
     }
   };
 
-  const handleDelete = (item: ChatHistoryItem) => {
-    setOpenMenuId(null);
-    if (window.confirm(`删除“${item.title}”这条聊天记录吗？`)) {
-      onDeleteChat(item.id);
-    }
-  };
+  React.useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!menuRootRef.current?.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
 
   return (
     <aside className="w-sidebar h-full bg-surface-side-bg flex flex-col border-r border-text-border shrink-0">
@@ -141,22 +161,39 @@ export default function Sidebar({
       <div className="h-px bg-text-border mx-3" />
 
       {/* Chat History */}
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      <div ref={menuRootRef} className="flex-1 overflow-y-auto px-2 py-2">
         {chatHistory.map((item) => (
           <div
             key={item.id}
             className="relative group"
           >
-            <button
-              onClick={() => onSelectChat(item.id)}
-              className={`w-full flex items-center px-3 py-1.5 pr-8 rounded-lg text-[13px] transition-colors duration-150 ${
-              item.id === activeSessionId
-                ? "bg-brand-blue-light text-brand-blue"
-                : "text-text-secondary hover:bg-gray-100"
-              }`}
-            >
-              <span className="truncate flex-1 text-left">{item.title}</span>
-            </button>
+            {editingId === item.id ? (
+              <input
+                autoFocus
+                value={editingTitle}
+                onChange={(event) => setEditingTitle(event.target.value)}
+                onBlur={() => finishRename(item)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") finishRename(item);
+                  if (event.key === "Escape") {
+                    setEditingId(null);
+                    setEditingTitle("");
+                  }
+                }}
+                className="h-[30px] w-full rounded-lg border border-brand-blue/40 bg-white px-3 pr-8 text-[13px] text-text-primary outline-none"
+              />
+            ) : (
+              <button
+                onClick={() => onSelectChat(item.id)}
+                className={`w-full flex items-center px-3 py-1.5 pr-8 rounded-lg text-[13px] transition-colors duration-150 ${
+                item.id === activeSessionId
+                  ? "bg-brand-blue-light text-brand-blue"
+                  : "text-text-secondary hover:bg-gray-100"
+                }`}
+              >
+                <span className="truncate flex-1 text-left">{item.title}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={(e) => {
@@ -164,7 +201,7 @@ export default function Sidebar({
                 setOpenMenuId((current) => (current === item.id ? null : item.id));
               }}
               className={`absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-text-tertiary transition hover:bg-white hover:text-text-primary ${
-                openMenuId === item.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                openMenuId === item.id || editingId === item.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
               }`}
               aria-label="聊天记录操作"
             >

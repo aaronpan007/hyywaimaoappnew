@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,10 @@ _STANDARD_FIELDS = [
 ]
 
 _STRUCTURED_NOTE_FIELDS = ("ai_summary", "business_match", "outreach_suggestion")
+_COMPLETION_SOURCE_FIELDS = (
+    "company_name", "website", "country", "industry", "company_role",
+    "ai_summary", "business_match", "outreach_suggestion", "user_note",
+)
 
 # Column name mapping: various Chinese/English headers → Lead model fields
 _COLUMN_MAP = {
@@ -100,6 +105,39 @@ def _normalize_column_name(name: str) -> str:
     return name.strip().lower()
 
 
+def _compact_column_name(name: str) -> str:
+    """Normalize aggressively for exported/imported sheet header variants."""
+    text = _normalize_column_name(name)
+    text = text.replace("（必填）", "").replace("(required)", "")
+    return re.sub(r"[\s_\-./\\|:：,，;；()（）\[\]【】]+", "", text)
+
+
+def _lookup_column_field(header: str) -> str | None:
+    normalized = _normalize_column_name(header)
+    if normalized in _COLUMN_MAP:
+        return _COLUMN_MAP[normalized]
+
+    compact = _compact_column_name(header)
+    for key, field_name in _COLUMN_MAP.items():
+        if _compact_column_name(key) == compact:
+            return field_name
+    return None
+
+
+def _is_url_only(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9.-]+\.[a-z]{2,}(?:/[^\s]*)?", text, re.I))
+
+
+def _clean_structured_field(field_name: str, value: str) -> str:
+    text = (value or "").strip()
+    if field_name == "outreach_suggestion" and _is_url_only(text):
+        return ""
+    return text
+
+
 def _parse_json_object(text: str) -> dict | list | None:
     """Parse JSON from plain text or a markdown code block."""
     text = (text or "").strip()
@@ -130,7 +168,12 @@ def _map_row(row: dict, mapped_headers: dict[str, str]) -> dict:
         value = row.get(col_name, "")
         if value is None:
             value = ""
-        value = str(value).strip()
+        value = _clean_structured_field(field_name, str(value))
+        if not value:
+            lead.setdefault(field_name, "")
+            continue
+        if lead.get(field_name):
+            continue
         lead[field_name] = value
     return lead
 
@@ -203,9 +246,9 @@ def _build_column_mapping(headers: list[str]) -> dict[str, str]:
     """Build a mapping from original column names to lead field names."""
     mapping = {}
     for header in headers:
-        normalized = _normalize_column_name(header)
-        if normalized in _COLUMN_MAP:
-            mapping[header] = _COLUMN_MAP[normalized]
+        field_name = _lookup_column_field(header)
+        if field_name:
+            mapping[header] = field_name
     return mapping
 
 
@@ -317,7 +360,7 @@ async def _complete_structured_fields(leads: list[dict]) -> list[dict]:
     """Use LLM to align uploaded notes into structured lead fields without inventing facts."""
     candidates = [
         lead for lead in leads
-        if lead.get("user_note")
+        if any((lead.get(field) or "").strip() for field in _COMPLETION_SOURCE_FIELDS)
         and any(not (lead.get(field) or "").strip() for field in ("country", *_STRUCTURED_NOTE_FIELDS))
     ]
     if not candidates:
@@ -367,6 +410,7 @@ Fields to fill:
 - ai_summary: short factual customer/company summary from the source.
 - business_match: why this lead may match our business, only if source has matching clues.
 - outreach_suggestion: concrete outreach angle or email suggestion, only if source supports it.
+- outreach_suggestion must not be only a URL, domain, or website. If the only available source is a link, return an empty string.
 
 Rows:
 {json.dumps(payload, ensure_ascii=False)}
@@ -395,7 +439,7 @@ Only output JSON."""
                 for field in ("country", *_STRUCTURED_NOTE_FIELDS):
                     if (lead.get(field) or "").strip():
                         continue
-                    value = str(item.get(field, "") or "").strip()
+                    value = _clean_structured_field(field, str(item.get(field, "") or ""))
                     if value:
                         lead[field] = value[:2000]
 
