@@ -78,9 +78,22 @@ def build_system_prompt(language: str) -> str:
     """Build the full system prompt with language requirement."""
     parts = [_BASE_SYSTEM_PROMPT]
     if language == "cn":
-        parts.append("\n## 语言要求\n请用中文撰写邮件。")
+        parts.append(
+            "\n## 语言要求\n"
+            "请用中文撰写邮件。邮件主题和正文都必须是中文商务表达。"
+        )
     else:
-        parts.append("\n## 语言要求\nPlease write the email in English.")
+        parts.append(
+            "\n## Language Requirement\n"
+            "Write the email in English only. Both email_subject and email_body must be English. "
+            "Do not output Chinese sentences, Chinese section labels, or mixed Chinese-English copy."
+        )
+    parts.append(
+        "\n## 数据使用要求\n"
+        "如果客户数据缺少 AI分析摘要、业务匹配点或开发建议，只能基于已提供的客户字段"
+        "（公司名、网站、国家/地区、行业、公司角色、联系人、邮箱等）和我司信息进行合理撰写。"
+        "不要编造客户项目、近期动态、规模、采购需求或联系人细节；信息不足时用更保守、自然的切入。"
+    )
     return "\n".join(parts)
 
 
@@ -220,7 +233,7 @@ def select_relevant_cases(customer: dict, all_cases: list, max_cases: int = 3) -
     return [case for _, case in scored[:max_cases]]
 
 
-def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None = None) -> str:
+def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None = None, language: str = "en") -> str:
     """Build the user prompt for AI email generation.
 
     Ported from toolkit. Maps Lead model fields to prompt field names.
@@ -262,7 +275,18 @@ def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None
             lines.append(build_profile_section(profile))
 
     lines.append("")
+    if not (ai_summary or match_points or outreach):
+        lines.append("")
+        lines.append(
+            "注意：该客户缺少 AI分析摘要/业务匹配点/开发建议。请只根据客户表格中已有字段和我司信息写信，"
+            "用保守、可信的方式建立联系，不要假装知道客户的具体项目或近期动态。"
+        )
+
     lines.append("请根据以上信息，为这家客户撰写一封个性化开发信。")
+    if language == "cn":
+        lines.append("语言再次确认：请输出中文邮件。")
+    else:
+        lines.append("Language reminder: output English email only.")
     lines.append("严格遵守7条规则，输出 JSON 格式。")
 
     return "\n".join(lines)
@@ -372,14 +396,24 @@ def parse_ai_response(response_text: str) -> dict | None:
 # AI call (sync, run in thread)
 # ---------------------------------------------------------------------------
 
-def _generate_one_sync(customer: dict, profile: dict, system_prompt: str) -> dict | None:
+def _is_language_match(subject: str, body: str, language: str) -> bool:
+    text = f"{subject}\n{body}".strip()
+    if not text:
+        return False
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    if language == "cn":
+        return cjk_count >= 8
+    return cjk_count == 0
+
+
+def _generate_one_sync(customer: dict, profile: dict, system_prompt: str, language: str) -> dict | None:
     """Generate a personalized email for a single customer. Synchronous.
 
     Returns {"email_subject": "...", "email_body": "..."} or None on failure.
     """
     all_cases = [cs for cs in profile.get("case_studies", []) if cs.get("usable_in_outreach")]
     selected_cases = select_relevant_cases(customer, all_cases, max_cases=3)
-    user_prompt = build_user_prompt(customer, profile, selected_cases)
+    user_prompt = build_user_prompt(customer, profile, selected_cases, language)
 
     for attempt in range(3):  # max_retries=2 → 3 attempts total
         try:
@@ -416,6 +450,17 @@ def _generate_one_sync(customer: dict, profile: dict, system_prompt: str) -> dic
                 if attempt < 2:
                     time.sleep(2)
                     continue
+            if not _is_language_match(subject, body, language):
+                logger.warning(
+                    "Email language mismatch for %s (expected %s, attempt %d)",
+                    customer.get("company_name"),
+                    language,
+                    attempt + 1,
+                )
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                return None
 
             return {"email_subject": subject, "email_body": body}
 
@@ -589,7 +634,7 @@ async def run_email_craft_pipeline(task_id: int, user_id: int, intent: dict):
 
             try:
                 result = await asyncio.to_thread(
-                    _generate_one_sync, customer, profile_data, system_prompt
+                    _generate_one_sync, customer, profile_data, system_prompt, language
                 )
             except Exception as e:
                 logger.error("Email generation error for %s: %s", company_name_lead, str(e)[:200])
