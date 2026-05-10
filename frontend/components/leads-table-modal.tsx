@@ -126,11 +126,15 @@ export default function LeadsTableModal({
     }
   };
 
-  const getScoreClass = (score: number) => {
+  const getScoreClass = (score?: number | null) => {
+    if (score == null) return "text-text-tertiary bg-gray-50 border-gray-200";
     if (score >= 80) return "text-green-700 bg-green-50 border-green-200";
     if (score >= 60) return "text-yellow-700 bg-yellow-50 border-yellow-200";
     return "text-red-600 bg-red-50 border-red-200";
   };
+
+  const formatMatchScore = (score?: number | null) =>
+    score == null ? "-" : score.toFixed(1);
 
   /** Extract display domain from full URL */
   const getDisplayDomain = (url: string) => {
@@ -382,7 +386,7 @@ export default function LeadsTableModal({
                               </td>
                               <td className="py-3 px-3">
                                 <span className={`inline-block px-2 py-0.5 rounded-md text-[12px] font-medium border ${getScoreClass(lead.matchScore)}`}>
-                                  {lead.matchScore.toFixed(1)}
+                                  {formatMatchScore(lead.matchScore)}
                                 </span>
                               </td>
                               <td className="py-3 px-3">
@@ -500,7 +504,7 @@ export default function LeadsTableModal({
                               <span
                                 className={`inline-block px-2 py-0.5 rounded-md text-[12px] font-medium border ${getScoreClass(lead.matchScore)}`}
                               >
-                                {lead.matchScore.toFixed(1)}
+                                {formatMatchScore(lead.matchScore)}
                               </span>
                             </td>
                             <td className="py-3 px-3 align-top">

@@ -118,25 +118,17 @@ export default function Sidebar({
 
       {/* Chat History */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
-        {chatHistory.length > 0 && (
-          <div className="px-3 py-1.5">
-            <span className="text-[12px] text-text-tertiary font-medium">今天</span>
-          </div>
-        )}
         {chatHistory.map((item) => (
           <button
             key={item.id}
             onClick={() => onSelectChat(item.id)}
-            className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-[13px] transition-colors duration-150 group ${
+            className={`w-full flex items-center px-3 py-1.5 rounded-lg text-[13px] transition-colors duration-150 group ${
               item.id === activeSessionId
                 ? "bg-brand-blue-light text-brand-blue"
                 : "text-text-secondary hover:bg-gray-100"
             }`}
           >
             <span className="truncate flex-1 text-left">{item.title}</span>
-            <span className="text-[11px] text-text-tertiary ml-2 shrink-0">
-              {item.timestamp.replace("分钟前", "m").replace("小时前", "h").replace("昨天", "1d").replace("天前", "d")}
-            </span>
           </button>
         ))}
       </div>

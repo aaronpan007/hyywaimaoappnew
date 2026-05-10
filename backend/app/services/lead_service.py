@@ -114,6 +114,18 @@ def _format_source_list(task: Task | None) -> str:
     return f"{task.type} - {created}".strip(" -")
 
 
+def _display_match_score(lead: Lead, task: Task | None) -> float | None:
+    """Hide placeholder scores for imported rows that have not been AI-scored."""
+    if (
+        task is not None
+        and task.type == "import"
+        and float(lead.match_score or 0) == 0
+        and not (lead.ai_summary or lead.business_match or lead.outreach_suggestion)
+    ):
+        return None
+    return lead.match_score
+
+
 async def get_leads(
     db: AsyncSession,
     user_id: int,
@@ -215,11 +227,12 @@ async def get_leads(
         else:
             email_status = "draft"
 
+        task = task_map.get(lead.task_id)
         items.append(
             LeadResponse(
                 id=lead.id,
                 source_task_id=lead.task_id,
-                source_list=_format_source_list(task_map.get(lead.task_id)),
+                source_list=_format_source_list(task),
                 user_note=lead.user_note or "",
                 company_name=lead.company_name,
                 website=lead.website,
@@ -232,7 +245,7 @@ async def get_leads(
                 ai_summary=lead.ai_summary,
                 business_match=lead.business_match,
                 outreach_suggestion=lead.outreach_suggestion,
-                match_score=lead.match_score,
+                match_score=_display_match_score(lead, task),
                 email_status=email_status,
                 email_subject=latest_email.email_subject if latest_email else "",
                 email_body=latest_email.email_body if latest_email else "",
@@ -344,9 +357,16 @@ async def get_leads_with_emails(
     result = await db.execute(query)
     leads = result.scalars().all()
 
+    task_ids = {lead.task_id for lead in leads}
+    task_map: dict[int, Task] = {}
+    if task_ids:
+        task_result = await db.execute(select(Task).where(Task.id.in_(task_ids)))
+        task_map = {task.id: task for task in task_result.scalars().all()}
+
     items = []
     for lead in leads:
         em = email_map.get(lead.id)
+        task = task_map.get(lead.task_id)
         items.append(
             LeadEmailResponse(
                 id=lead.id,
@@ -358,7 +378,7 @@ async def get_leads_with_emails(
                 contact_name=clean_contact_name(lead.contact_name),
                 email=lead.email,
                 phone=lead.phone,
-                match_score=lead.match_score,
+                match_score=_display_match_score(lead, task),
                 email_subject=em.email_subject if em else "",
                 email_body=em.email_body if em else "",
             )
@@ -407,6 +427,12 @@ async def export_leads_xlsx(
     result = await db.execute(query.order_by(Lead.match_score.desc()))
     leads = result.scalars().all()
 
+    task_ids = {lead.task_id for lead in leads}
+    task_map: dict[int, Task] = {}
+    if task_ids:
+        task_result = await db.execute(select(Task).where(Task.id.in_(task_ids)))
+        task_map = {task.id: task for task in task_result.scalars().all()}
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Leads"
@@ -435,7 +461,7 @@ async def export_leads_xlsx(
             clean_contact_name(lead.contact_name),
             lead.email,
             lead.phone,
-            lead.match_score,
+            _display_match_score(lead, task_map.get(lead.task_id)),
             lead.ai_summary,
             lead.business_match,
             lead.outreach_suggestion,

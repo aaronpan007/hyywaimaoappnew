@@ -92,10 +92,15 @@ function getStatusFilterKey(status?: string): Exclude<StatusFilter, "all"> | nul
   return normalized;
 }
 
-function getScoreClass(score: number) {
+function getScoreClass(score?: number | null) {
+  if (score == null) return "text-text-tertiary bg-gray-50 border-gray-200";
   if (score >= 80) return "text-green-700 bg-green-50 border-green-200";
   if (score >= 60) return "text-yellow-700 bg-yellow-50 border-yellow-200";
   return "text-red-600 bg-red-50 border-red-200";
+}
+
+function formatMatchScore(score?: number | null) {
+  return score == null ? "-" : score.toFixed(1);
 }
 
 function displayDomain(url?: string) {
@@ -918,7 +923,7 @@ export default function CustomerListPage({
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-block rounded-md border px-2 py-0.5 text-[12px] font-medium ${getScoreClass(lead.matchScore)}`}>
-                        {lead.matchScore.toFixed(1)}
+                        {formatMatchScore(lead.matchScore)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -1138,7 +1143,7 @@ export default function CustomerListPage({
                 <DetailField label="公司角色" value={selectedLead.companyRole} />
                 <EditableDetailField label="联系人" lead={selectedLead} field="contactName" displayValue={selectedLead.contactName} />
                 <EditableDetailField label="邮箱" lead={selectedLead} field="email" displayValue={selectedLead.email} />
-                <DetailField label="匹配度" value={selectedLead.matchScore.toFixed(1)} />
+                <DetailField label="匹配度" value={formatMatchScore(selectedLead.matchScore)} />
                 <DetailField
                   label="开发信状态"
                   value={statusConfig[normalizeEmailStatus(selectedLead.emailStatus)].label}

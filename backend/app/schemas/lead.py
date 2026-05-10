@@ -27,7 +27,7 @@ class LeadResponse(CamelModel):
     ai_summary: str = ""
     business_match: str = ""
     outreach_suggestion: str = ""
-    match_score: float
+    match_score: float | None
     email_status: str = "unwritten"
     email_subject: str = ""
     email_body: str = ""
@@ -46,7 +46,7 @@ class LeadDetailResponse(CamelModel):
     ai_summary: str
     business_match: str
     outreach_suggestion: str
-    match_score: float
+    match_score: float | None
     created_at: str
 
 
@@ -60,6 +60,6 @@ class LeadEmailResponse(CamelModel):
     contact_name: str
     email: str
     phone: str = ""
-    match_score: float
+    match_score: float | None
     email_subject: str = ""
     email_body: str = ""

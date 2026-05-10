@@ -121,7 +121,7 @@ export interface Lead {
   contactName: string;
   email: string;
   phone: string;
-  matchScore: number;
+  matchScore: number | null;
   emailStatus:
     | "unwritten"
     | "draft"
