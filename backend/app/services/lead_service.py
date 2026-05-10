@@ -73,6 +73,7 @@ async def create_leads_from_files(
                     business_match=lead_data.get("business_match", ""),
                     outreach_suggestion=lead_data.get("outreach_suggestion", ""),
                     match_score=lead_data.get("match_score", 0) or 0,
+                    user_note=lead_data.get("user_note", ""),
                 )
                 db.add(lead)
                 existing_names.add(company_name.lower())

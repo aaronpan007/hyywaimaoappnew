@@ -250,6 +250,10 @@ def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None
     lines.append(f"联系人: {customer.get('contact_name', 'N/A')}")
     lines.append(f"邮箱: {customer.get('email', 'N/A')}")
 
+    user_note = customer.get("user_note", "").strip()
+    if user_note:
+        lines.append(f"\n用户上传/手动补充信息:\n{user_note}")
+
     ai_summary = customer.get("ai_summary", "").strip()
     if ai_summary:
         lines.append(f"\nAI分析摘要:\n{ai_summary}")
@@ -275,7 +279,7 @@ def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None
             lines.append(build_profile_section(profile))
 
     lines.append("")
-    if not (ai_summary or match_points or outreach):
+    if not (ai_summary or match_points or outreach or user_note):
         lines.append("")
         lines.append(
             "注意：该客户缺少 AI分析摘要/业务匹配点/开发建议。请只根据客户表格中已有字段和我司信息写信，"
@@ -536,6 +540,7 @@ def _lead_to_customer_dict(lead: Lead) -> dict:
         "contact_name": lead.contact_name,
         "email": lead.email,
         "phone": lead.phone,
+        "user_note": lead.user_note,
         "ai_summary": lead.ai_summary,
         "business_match_points": lead.business_match,
         "outreach_content": lead.outreach_suggestion,

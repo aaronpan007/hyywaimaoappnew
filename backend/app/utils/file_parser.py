@@ -93,6 +93,27 @@ def _map_row(row: dict, mapped_headers: dict[str, str]) -> dict:
     return lead
 
 
+def _format_extra_columns(row: dict, mapped_headers: dict[str, str]) -> str:
+    """Preserve useful unmapped spreadsheet cells as a free-form lead note."""
+    mapped_cols = set(mapped_headers)
+    extras = []
+    for col_name, value in row.items():
+        header = str(col_name or "").strip()
+        if not header or header in mapped_cols:
+            continue
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if len(text) > 500:
+            text = text[:500].rstrip() + "..."
+        extras.append(f"{header}: {text}")
+    if not extras:
+        return ""
+    return "用户上传补充信息：\n" + "\n".join(extras[:20])
+
+
 def _try_parse_match_score(value: str) -> float:
     """Try to parse match_score from various formats."""
     if not value:
@@ -288,6 +309,9 @@ async def _parse_excel(raw_bytes: bytes) -> list[dict]:
     for row_dict in data_rows:
         lead = _map_row(row_dict, mapped_headers)
         if lead.get("company_name"):
+            extra_note = _format_extra_columns(row_dict, mapped_headers)
+            if extra_note:
+                lead["user_note"] = extra_note
             if "match_score" in lead:
                 lead["match_score"] = _try_parse_match_score(lead.get("match_score", ""))
             leads.append(lead)
@@ -328,6 +352,9 @@ async def _parse_csv(raw_bytes: bytes) -> list[dict]:
     for row in reader2:
         lead = _map_row(row, mapped_headers)
         if lead.get("company_name"):
+            extra_note = _format_extra_columns(row, mapped_headers)
+            if extra_note:
+                lead["user_note"] = extra_note
             if "match_score" in lead:
                 lead["match_score"] = _try_parse_match_score(lead.get("match_score", ""))
             leads.append(lead)
@@ -364,6 +391,9 @@ async def _parse_docx(raw_bytes: bytes) -> list[dict]:
         for row_dict in data_rows:
             lead = _map_row(row_dict, mapped_headers)
             if lead.get("company_name"):
+                extra_note = _format_extra_columns(row_dict, mapped_headers)
+                if extra_note:
+                    lead["user_note"] = extra_note
                 if "match_score" in lead:
                     lead["match_score"] = _try_parse_match_score(lead.get("match_score", ""))
                 leads.append(lead)
