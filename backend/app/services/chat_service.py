@@ -71,6 +71,7 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+SSE_KEEPALIVE_INTERVAL = 15
 
 
 async def start_chat(
@@ -714,6 +715,7 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
 
     seen_log_snapshots: dict[int, tuple[str, str, str, int]] = {}
     last_log_time = time.monotonic()
+    last_keepalive_time = time.monotonic()
     while True:
         result = await db.execute(
             select(TaskLog)
@@ -744,6 +746,7 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
 
         if emitted_update:
             last_log_time = time.monotonic()
+            last_keepalive_time = time.monotonic()
 
         await db.refresh(task)
         if task.status == "cancelled":
@@ -787,6 +790,10 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
             )
             yield sse_format("done", {"taskId": task_id, "conversationId": conversation_id})
             break
+
+        if time.monotonic() - last_keepalive_time > SSE_KEEPALIVE_INTERVAL:
+            last_keepalive_time = time.monotonic()
+            yield ": keepalive\n\n"
 
         await asyncio.sleep(0.5)
 

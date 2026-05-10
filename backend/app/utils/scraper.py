@@ -293,7 +293,11 @@ async def _scrape_single_company(page, company: dict, timeout_ms: int) -> dict:
     return company
 
 
-async def _scrape_all_async(companies: list[dict], timeout_s: int = 30) -> list[dict]:
+async def _scrape_all_async(
+    companies: list[dict],
+    timeout_s: int = 30,
+    progress_callback=None,
+) -> list[dict]:
     """Async internal: scrape all companies with Playwright."""
     from playwright.async_api import async_playwright
 
@@ -328,6 +332,13 @@ async def _scrape_all_async(companies: list[dict], timeout_s: int = 30) -> list[
                 company.get("_domain", ""),
                 companies[i].get("_scrape_status", "unknown"),
             )
+            if progress_callback:
+                progress_callback(
+                    i + 1,
+                    len(companies),
+                    company.get("_domain", ""),
+                    companies[i].get("_scrape_status", "unknown"),
+                )
 
             await context.close()
 
@@ -339,9 +350,13 @@ async def _scrape_all_async(companies: list[dict], timeout_s: int = 30) -> list[
     return companies
 
 
-def scrape_companies_sync(companies: list[dict], timeout_s: int = 30) -> list[dict]:
+def scrape_companies_sync(
+    companies: list[dict],
+    timeout_s: int = 30,
+    progress_callback=None,
+) -> list[dict]:
     """Synchronous entry point — runs its own event loop.
 
     Called via asyncio.to_thread() from the async pipeline.
     """
-    return asyncio.run(_scrape_all_async(companies, timeout_s))
+    return asyncio.run(_scrape_all_async(companies, timeout_s, progress_callback))

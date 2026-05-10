@@ -1252,9 +1252,85 @@ GitHub / 服务器状态：
 - PM2 日志确认新进程正常启动：`Started server process [48783]`、`Application startup complete`、`Uvicorn running on http://127.0.0.1:8000`。
 - 前端由 Vercel 关联 GitHub 时，推送 `main` 后通常会自动部署；仍需在 Vercel 控制台确认本次提交的部署状态。
 
-后续验证：
+生产部署速查：
 
-1. 等 Vercel 部署 `a91ed29` 后，在浏览器打开公司资料页，确认按钮已从"重新采集"变成"清空公司资料"。
+- GitHub 仓库：`git@github.com:aaronpan007/hyywaimaoappnew.git`（服务器当前 remote 使用 HTTPS：`https://github.com/aaronpan007/hyywaimaoappnew`）。
+- 生产服务器：腾讯云香港轻量服务器，公网 IP `43.128.3.59`，SSH 用户当前为 `ubuntu`。
+- 生产项目目录：`/var/www/hyyskill`；后端 PM2 执行目录为 `/var/www/hyyskill/backend`。
+- API 域名：`https://api.clientconnet.com`；前端域名：`https://www.clientconnet.com`（Vercel 自动部署）。
+- 后端进程：PM2 管理 `waimao-api` 与 `waimao-auth`。
+- 常规后端部署命令：
+  ```bash
+  ssh ubuntu@43.128.3.59
+  cd /var/www/hyyskill
+  git status
+  git log --oneline -5
+  git pull origin main
+  git log --oneline -5
+  pm2 restart all
+  pm2 status
+  curl https://api.clientconnet.com/docs -I
+  curl https://api.clientconnet.com/api/profile
+  ```
+- 验证说明：`/docs` 返回 `200` 表示 FastAPI 文档页可访问；`/api/profile` 无登录 token 返回 `{"detail":"Authentication required"}` 属于正常，说明路由与认证链路都在线。根路径 `/` 返回 `404` 也是正常，因为后端没有根路由。
+- 如果忘记项目目录，可先查 PM2：`pm2 describe waimao-api`，看 `exec cwd`；当前应为 `/var/www/hyyskill/backend`，项目根目录是上一级 `/var/www/hyyskill`。
+- 注意：如果 `git status` 只显示未跟踪的 `auth-service/package-lock.json`，目前不影响部署；不要随手删除或提交，后续再统一判断是否加入 `.gitignore`。
+
+### 2026-05-10 线上补充资料覆盖 Bug 修复部署
+
+本轮修复：
+
+- 待部署 commit：`a052b5d Fix supplement pipeline overwriting existing company profile`。
+- 问题：公司资料页点击“补充资料”后，AI 返回的是增量修改字段，但保存时直接覆盖了整个画像，导致原有公司资料丢失。
+- 修复：`backend/app/services/profile_pipeline_service.py` 在保存 update/quick edit 结果前调用 `_merge_profile_data`，把 AI 增量结果合并到现有画像，而不是整包覆盖。
+
+线上部署结果：
+
+- 用户已在腾讯云香港服务器 `43.128.3.59` 执行：
+  ```bash
+  cd /var/www/hyyskill
+  git pull origin main
+  pm2 restart all
+  pm2 status
+  ```
+- 服务器代码已从 `a91ed29` 快进到 `a052b5d`。
+- PM2 `waimao-api` 与 `waimao-auth` 均为 `online`。
+- 公网验证：
+  - `curl https://api.clientconnet.com/docs -I` 返回 `HTTP/2 200`。
+  - `curl https://api.clientconnet.com/api/profile` 返回 `{"detail":"Authentication required"}`，符合未登录访问受保护接口的预期。
+- 浏览器业务验证通过：登录 `https://www.clientconnet.com` 后，公司资料页“补充资料”功能可用，补充资料不再覆盖已有公司画像。
+
+### 2026-05-10 客户开发抓站阶段 SSE network error 修复
+
+测试现象：
+
+- 在客户开发中输入“搜索2家在加拿大做铝天花的本土公司，contractor”后，任务能完成“分析需求”和“搜索公司数据”，进入“抓取网站信息”时前端显示 `出错了：network error`。
+- 截图显示已搜索到 6 家公司，说明 Serper 搜索阶段正常；问题发生在抓取多个网站的长耗时阶段。
+
+原因判断：
+
+- `backend/app/services/pipeline_service.py` 原先用 `asyncio.to_thread(scrape_companies_sync, companies)` 一次性抓取所有网站。
+- 抓站期间 `task_logs` 没有逐站更新，SSE 长时间没有新事件；浏览器/代理可能把长连接视为断开，前端只看到泛化的 `network error`。
+
+已修复：
+
+- `backend/app/utils/scraper.py`：`scrape_companies_sync()` 和内部 `_scrape_all_async()` 新增 `progress_callback`，每抓完一个网站回调一次。
+- `backend/app/services/pipeline_service.py`：客户开发 pipeline 在抓站阶段通过回调把“已抓取 N/总数: domain (status)”写入 step 3 日志，并刷新 task heartbeat。
+- `backend/app/services/chat_service.py`：SSE 空闲超过 15 秒时发送注释型 `: keepalive`，避免长耗时任务期间连接静默。
+
+本地验证：
+
+- `python -m compileall backend/app` 通过。
+
+部署后验证：
+
+1. 服务器拉取新代码并 `pm2 restart all`。
+2. 再跑同一条客户开发测试，应在“抓取网站信息”阶段看到逐站进度，而不是长时间卡住后 `network error`。
+3. 如仍报错，服务器上查看：`pm2 logs waimao-api --lines 200`，重点看 Playwright/Chromium 抓站异常。
+
+a91ed29 历史验证清单（清空/入口修复；最新线上版本见上方部署记录）：
+
+1. 在浏览器打开公司资料页，确认按钮已从"重新采集"变成"清空公司资料"。
 2. 在已有公司画像页面点击"清空公司资料"并确认，应调用 `DELETE /api/profile`，页面回到空状态，且不出现 company-profile pipeline timeline。
 3. 清空后刷新页面，`GET /api/profile` 应返回空状态；邮箱配置不应继续绑定已删除的画像推荐。
 4. 重新建立画像后点击"补充资料"，发送"新增一个产品线..."或上传资料，应启动 `company-profile` 的 update/quick edit 流程，任务结果显示"公司画像已更新"，而不是创建客户搜索或普通聊天。
@@ -1275,9 +1351,11 @@ GitHub / 服务器状态：
 - 前端：Next.js 14 + TypeScript + Tailwind，目录 frontend/
 - 后端：FastAPI + SQLAlchemy async + PostgreSQL，目录 backend/
 - Auth：auth-service/ 独立 Better Auth Node 服务
-- 生产 API/Auth/DB 已迁移到腾讯云香港服务器 43.128.3.59；api.clientconnet.com 走 Nginx -> waimao-api/waimao-auth，公网 /health 和 /api/auth/ok 已验证通过。
-- 最新代码已推送并应用到服务器：origin/main 当前到 a91ed29，服务器 /var/www/hyyskill 已 git pull 到 a91ed29；waimao-api 已重启，http://127.0.0.1:8000/health 与 https://api.clientconnet.com/health 均返回 {"status":"ok"}。
-- 前端是否已生效取决于 Vercel 是否完成 a91ed29 的自动部署；若页面仍显示"重新采集"，先检查 Vercel 部署状态。
+- 生产 API/Auth/DB 已迁移到腾讯云香港服务器 43.128.3.59；api.clientconnet.com 走 Nginx -> waimao-api/waimao-auth，公网 /docs 已验证通过，受保护接口未登录返回 Authentication required 属于正常。
+- GitHub 仓库：git@github.com:aaronpan007/hyywaimaoappnew.git。
+- 最新代码已推送并应用到服务器：origin/main 当前到 a052b5d，服务器 /var/www/hyyskill 已 git pull 到 a052b5d；waimao-api/waimao-auth 已通过 pm2 restart all 重启并 online。
+- 服务器部署命令固定流程：ssh ubuntu@43.128.3.59 -> cd /var/www/hyyskill -> git pull origin main -> pm2 restart all -> pm2 status -> curl https://api.clientconnet.com/docs -I。
+- 前端由 Vercel 关联 GitHub main 自动部署；本次 a052b5d 只改后端，已通过线上浏览器验证“补充资料”可用且不再覆盖已有公司画像。
 
 当前最新公司资料逻辑：
 - 公司资料页已有画像时，按钮是"补充资料"、"清空公司资料"、"导出画像"。
@@ -1302,10 +1380,9 @@ GitHub / 服务器状态：
 - backend/app/services/profile_pipeline_service.py
 
 下一步建议先做浏览器烟测：
-1. 等 Vercel 完成 a91ed29 部署后，登录前端确认公司资料页按钮为"清空公司资料"。
-2. 点击"清空公司资料"并确认，检查无 pipeline 启动且页面回到空状态。
-3. 重新建立画像后点击"补充资料"，输入新增产品/案例，确认走 company-profile update/quick edit。
-4. 用上传 docx/xlsx/csv 的方式补充公司资料，确认后端会把文本提取进 company-profile prompt；PDF 解析仍是后续 TODO。
+1. 继续重点回归公司资料页“补充资料”：输入新增产品/案例后，确认只增量合并，不清空原有画像字段。
+2. 如需验证清空流程，点击"清空公司资料"并确认，检查无 pipeline 启动且页面回到空状态。
+3. 用上传 docx/xlsx/csv 的方式补充公司资料，确认后端会把文本提取进 company-profile prompt；PDF 解析仍是后续 TODO。
 
 注意：
 - 不要再把"重新采集"作为公司资料页默认入口；需要重跑官网采集时，应由用户在公司画像会话中明确提供官网 URL 或新的资料。

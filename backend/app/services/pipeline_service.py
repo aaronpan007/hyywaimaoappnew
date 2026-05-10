@@ -605,6 +605,25 @@ async def _update_task_log(
     await db.commit()
 
 
+async def _update_scrape_progress_log(
+    task_id: int,
+    completed: int,
+    total: int,
+    domain: str,
+    status: str,
+) -> None:
+    """Persist per-site scrape progress from the scraper worker thread."""
+    progress = int((completed / max(total, 1)) * 95)
+    async with async_session_factory() as progress_db:
+        await _update_task_log(
+            progress_db,
+            task_id,
+            step=3,
+            message=f"已抓取 {completed}/{total}: {domain} ({status})",
+            progress=progress,
+        )
+
+
 async def _load_profile(db, user_id: int) -> dict | None:
     """Load the user's current company profile data."""
     from app.models.company_profile import CompanyProfile
@@ -755,7 +774,40 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                 progress=0,
             )
 
-            companies = await asyncio.to_thread(scrape_companies_sync, companies)
+            loop = asyncio.get_running_loop()
+
+            def scrape_progress_callback(
+                completed: int,
+                total: int,
+                domain: str,
+                status: str,
+            ) -> None:
+                task_manager.update_heartbeat(task_id)
+                future = asyncio.run_coroutine_threadsafe(
+                    _update_scrape_progress_log(
+                        task_id,
+                        completed,
+                        total,
+                        domain,
+                        status,
+                    ),
+                    loop,
+                )
+                try:
+                    future.result(timeout=5)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to persist scrape progress for task %d: %s",
+                        task_id,
+                        str(e)[:200],
+                    )
+
+            companies = await asyncio.to_thread(
+                scrape_companies_sync,
+                companies,
+                30,
+                scrape_progress_callback,
+            )
 
             scraped_ok = sum(
                 1 for c in companies if c.get("_scrape_status") != "failed"
