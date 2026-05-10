@@ -1559,14 +1559,10 @@ async def run_supplement_pipeline(task_id: int, user_id: int, intent: dict) -> N
                     running_message="AI 正在增量补充公司画像",
                     timeout_message="AI 补充画像超过 10 分钟，请稍后重试",
                 )
-                profile = _normalize_profile(profile, existing_website, source_urls)
-                completeness = _normalize_completeness(
-                    profile.get("metadata", {}).get("profile_completeness")
-                )
                 await _update_task_log(
                     db, task_id, step=2,
                     status="completed",
-                    message=f"画像补充完成，完整度 {completeness:.0%}",
+                    message="画像补充完成",
                     progress=100,
                 )
             except Exception as exc:
@@ -1594,6 +1590,19 @@ async def run_supplement_pipeline(task_id: int, user_id: int, intent: dict) -> N
                 progress=30,
             )
 
+            # Merge AI incremental result into existing profile
+            if isinstance(existing_profile, dict) and existing_profile:
+                ai_keys = set(profile.keys())
+                full_keys = {"company_name", "one_line_intro", "products", "certifications",
+                             "case_studies", "core_competencies", "english_profile", "metadata"}
+                if not full_keys.issubset(ai_keys):
+                    logger.info("Supplement AI returned partial JSON (%d keys), merging into existing profile", len(profile))
+                profile = _merge_profile_data(existing_profile, profile)
+
+            profile = _normalize_profile(profile, existing_website, source_urls)
+            completeness = _normalize_completeness(
+                profile.get("metadata", {}).get("profile_completeness")
+            )
             markdown = _profile_to_markdown(profile)
             cp = await db.get(CompanyProfile, existing_profile_id)
             if cp:
@@ -1620,7 +1629,7 @@ async def run_supplement_pipeline(task_id: int, user_id: int, intent: dict) -> N
             await _update_task_log(
                 db, task_id, step=3,
                 status="completed",
-                message="公司画像已更新",
+                message=f"公司画像已更新（增量补充），完整度 {completeness:.0%}",
                 progress=100,
             )
             task_manager.update_heartbeat(task_id)
