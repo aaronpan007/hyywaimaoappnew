@@ -14,6 +14,10 @@ class DeleteLeadsRequest(BaseModel):
     lead_ids: list[int]
 
 
+class ImportLeadsRequest(BaseModel):
+    files: list[dict]
+
+
 @router.get("/leads", response_model=PaginatedResponse[LeadResponse])
 async def get_leads(
     db: DBSession,
@@ -52,6 +56,12 @@ async def get_leads(
         resolved_sort_by,
         resolved_sort_order,
     )
+
+
+@router.post("/leads/import")
+async def import_leads(req: ImportLeadsRequest, db: DBSession, user: CurrentUser):
+    task_id, saved_count = await lead_service.create_leads_from_files(db, user, req.files)
+    return {"taskId": task_id, "savedCount": saved_count}
 
 
 @router.delete("/leads")

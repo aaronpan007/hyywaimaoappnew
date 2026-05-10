@@ -185,6 +185,15 @@ export async function deleteLeads(leadIds: number[]): Promise<{ deleted: number 
   });
 }
 
+export async function importLeadsFromFiles(
+  files: { filename: string; data: string }[]
+): Promise<{ taskId: number; savedCount: number }> {
+  return apiFetch<{ taskId: number; savedCount: number }>("/api/leads/import", {
+    method: "POST",
+    body: JSON.stringify({ files }),
+  });
+}
+
 export async function updateLead(leadId: number, fields: { contactName?: string; email?: string; userNote?: string }): Promise<void> {
   const body: Record<string, string> = {};
   if (fields.contactName !== undefined) body["contact_name"] = fields.contactName;

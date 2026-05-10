@@ -16,9 +16,10 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
-import { deleteLeads, exportLeadsExcel, getLeads, updateLead, updateLeadEmail, type GetLeadsParams } from "@/lib/api";
+import { deleteLeads, exportLeadsExcel, getLeads, importLeadsFromFiles, updateLead, updateLeadEmail, type GetLeadsParams } from "@/lib/api";
 import type { EmailSettings, Lead } from "@/types";
 
 interface CustomerListPageProps {
@@ -140,7 +141,9 @@ export default function CustomerListPage({
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [isLoading, setIsLoading] = useState(false);
   const debounceTimer = useRef<ReturnType<typeof setTimeout>>();
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [copiedEmailId, setCopiedEmailId] = useState<number | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const [editingCell, setEditingCell] = useState<{ leadId: number; field: string; scope: "table" | "drawer" } | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const [editingEmailField, setEditingEmailField] = useState<"emailSubject" | "emailBody" | null>(null);
@@ -308,6 +311,37 @@ export default function CustomerListPage({
       await exportLeadsExcel({ search: debouncedSearch || undefined });
     } catch {
       alert("客户名单导出失败，请稍后重试");
+    }
+  };
+
+  const readFileAsBase64 = (file: File) =>
+    new Promise<{ filename: string; data: string }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(",")[1] || "";
+        resolve({ filename: file.name, data: base64 });
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+  const handleImportFiles = async (files: FileList | null) => {
+    const selected = Array.from(files || []);
+    if (selected.length === 0) return;
+
+    setIsImporting(true);
+    try {
+      const payload = await Promise.all(selected.map(readFileAsBase64));
+      const result = await importLeadsFromFiles(payload);
+      setPage(1);
+      await fetchLeads();
+      alert(`已导入 ${result.savedCount} 条客户信息`);
+    } catch (error) {
+      console.error("Failed to import leads:", error);
+      alert("导入失败，请检查文件格式后重试。支持 .xlsx/.xls/.csv/.docx");
+    } finally {
+      setIsImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
     }
   };
 
@@ -686,13 +720,31 @@ export default function CustomerListPage({
               <span>失败 {statusCounts.failed}</span>
             </div>
           </div>
-          <button
-            onClick={handleExport}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-text-border px-3 text-[13px] font-medium text-text-secondary transition-colors hover:bg-gray-50"
-          >
-            <Download size={15} />
-            导出 Excel
-          </button>
+          <div className="flex items-center gap-2">
+            <input
+              ref={importInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              accept=".xlsx,.xls,.csv,.docx"
+              onChange={(event) => handleImportFiles(event.target.files)}
+            />
+            <button
+              onClick={() => importInputRef.current?.click()}
+              disabled={isImporting}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-brand-blue px-3 text-[13px] font-medium text-white transition-colors hover:bg-brand-blue/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isImporting ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+              导入 Excel 客户信息
+            </button>
+            <button
+              onClick={handleExport}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-text-border px-3 text-[13px] font-medium text-text-secondary transition-colors hover:bg-gray-50"
+            >
+              <Download size={15} />
+              导出 Excel
+            </button>
+          </div>
         </div>
       </div>
 

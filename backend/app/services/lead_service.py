@@ -120,7 +120,6 @@ def _display_match_score(lead: Lead, task: Task | None) -> float | None:
         task is not None
         and task.type == "import"
         and float(lead.match_score or 0) == 0
-        and not (lead.ai_summary or lead.business_match or lead.outreach_suggestion)
     ):
         return None
     return lead.match_score

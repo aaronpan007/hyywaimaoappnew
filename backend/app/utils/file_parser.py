@@ -16,6 +16,8 @@ _STANDARD_FIELDS = [
     "outreach_suggestion", "match_score",
 ]
 
+_STRUCTURED_NOTE_FIELDS = ("ai_summary", "business_match", "outreach_suggestion")
+
 # Column name mapping: various Chinese/English headers → Lead model fields
 _COLUMN_MAP = {
     # Company info
@@ -29,8 +31,11 @@ _COLUMN_MAP = {
     "web": "website",
     "网址": "website",
     "国家": "country",
+    "国家/地区": "country",
+    "国家地区": "country",
     "country": "country",
     "地区": "country",
+    "市场": "country",
     "region": "country",
     "行业": "industry",
     "industry": "industry",
@@ -55,15 +60,29 @@ _COLUMN_MAP = {
     "tel": "phone",
     "telephone": "phone",
     # AI analysis fields
+    "ai 分析摘要": "ai_summary",
+    "ai分析摘要": "ai_summary",
+    "ai 分析": "ai_summary",
+    "ai分析": "ai_summary",
     "ai摘要": "ai_summary",
     "ai_summary": "ai_summary",
     "ai summary": "ai_summary",
     "摘要": "ai_summary",
+    "分析摘要": "ai_summary",
+    "客户分析": "ai_summary",
     "业务匹配": "business_match",
+    "业务匹配点": "business_match",
+    "匹配理由": "business_match",
+    "匹配原因": "business_match",
+    "客户匹配点": "business_match",
     "business_match": "business_match",
     "business match": "business_match",
     "匹配点": "business_match",
     "开发建议": "outreach_suggestion",
+    "开发信建议": "outreach_suggestion",
+    "开发切入点": "outreach_suggestion",
+    "外贸开发建议": "outreach_suggestion",
+    "开发信切入建议": "outreach_suggestion",
     "outreach_suggestion": "outreach_suggestion",
     "outreach suggestion": "outreach_suggestion",
     "建议": "outreach_suggestion",
@@ -79,6 +98,29 @@ _COLUMN_MAP = {
 def _normalize_column_name(name: str) -> str:
     """Normalize a column header for mapping."""
     return name.strip().lower()
+
+
+def _parse_json_object(text: str) -> dict | list | None:
+    """Parse JSON from plain text or a markdown code block."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if "```" in text:
+        import re
+        code_match = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text)
+        if code_match:
+            text = code_match.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = min([idx for idx in [text.find("{"), text.find("[")] if idx >= 0], default=-1)
+        end = max(text.rfind("}"), text.rfind("]"))
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                return None
+    return None
 
 
 def _map_row(row: dict, mapped_headers: dict[str, str]) -> dict:
@@ -174,21 +216,18 @@ async def _smart_build_column_mapping(
     """Build column mapping with LLM fallback for unmatched columns.
 
     1. Try static mapping first
-    2. If coverage < 50%, call LLM to map remaining columns
+    2. Call LLM to supplement any remaining meaningful columns
     3. LLM results only supplement (never override) static matches
     """
     static_mapping = _build_column_mapping(headers)
 
-    # Count how many headers got mapped
-    mapped_count = len(static_mapping)
-    total_headers = len(headers)
-
-    # If static mapping covers 50%+ of headers, return as-is
-    if total_headers == 0 or mapped_count / total_headers >= 0.5:
+    if not headers:
         return static_mapping
 
     # Build prompt for LLM
     unmapped_headers = [h for h in headers if h not in static_mapping]
+    if not unmapped_headers:
+        return static_mapping
 
     # Build sample data for context (first 3 rows, truncated values)
     sample_text = ""
@@ -254,7 +293,7 @@ Only output the JSON, nothing else."""
             if code_match:
                 response_text = code_match.group(1).strip()
 
-        llm_mapping = json.loads(response_text)
+        llm_mapping = _parse_json_object(response_text)
 
         if isinstance(llm_mapping, dict):
             for header, field_name in llm_mapping.items():
@@ -272,6 +311,98 @@ Only output the JSON, nothing else."""
         logger.warning("LLM column mapping failed: %s", str(e)[:200])
 
     return static_mapping
+
+
+async def _complete_structured_fields(leads: list[dict]) -> list[dict]:
+    """Use LLM to align uploaded notes into structured lead fields without inventing facts."""
+    candidates = [
+        lead for lead in leads
+        if lead.get("user_note")
+        and any(not (lead.get(field) or "").strip() for field in ("country", *_STRUCTURED_NOTE_FIELDS))
+    ]
+    if not candidates:
+        return leads
+
+    try:
+        import os
+        import replicate
+        from app.config import settings
+
+        if not settings.replicate_api_token:
+            return leads
+
+        if not os.environ.get("REPLICATE_API_TOKEN"):
+            os.environ["REPLICATE_API_TOKEN"] = settings.replicate_api_token
+
+        for start in range(0, len(candidates), 20):
+            chunk = candidates[start:start + 20]
+            payload = []
+            for idx, lead in enumerate(chunk):
+                payload.append({
+                    "row_id": idx,
+                    "company_name": lead.get("company_name", ""),
+                    "website": lead.get("website", ""),
+                    "country": lead.get("country", ""),
+                    "industry": lead.get("industry", ""),
+                    "company_role": lead.get("company_role", ""),
+                    "contact_name": lead.get("contact_name", ""),
+                    "email": lead.get("email", ""),
+                    "phone": lead.get("phone", ""),
+                    "ai_summary": lead.get("ai_summary", ""),
+                    "business_match": lead.get("business_match", ""),
+                    "outreach_suggestion": lead.get("outreach_suggestion", ""),
+                    "user_note": lead.get("user_note", ""),
+                })
+
+            prompt = f"""You normalize uploaded customer lead rows for a CRM.
+
+Task:
+- Fill only empty structured fields from the provided existing fields and user_note.
+- Do not invent facts. If the source text does not support a field, return an empty string for that field.
+- Keep existing non-empty field meaning intact.
+- Use concise business Chinese when the source is Chinese; otherwise concise English is okay.
+
+Fields to fill:
+- country: country or region only if clearly present.
+- ai_summary: short factual customer/company summary from the source.
+- business_match: why this lead may match our business, only if source has matching clues.
+- outreach_suggestion: concrete outreach angle or email suggestion, only if source supports it.
+
+Rows:
+{json.dumps(payload, ensure_ascii=False)}
+
+Output a JSON array. Each item must be:
+{{"row_id": 0, "country": "", "ai_summary": "", "business_match": "", "outreach_suggestion": ""}}
+Only output JSON."""
+
+            output = await asyncio.to_thread(
+                replicate.run,
+                settings.replicate_model,
+                input={"messages": [{"role": "user", "content": prompt}]},
+            )
+            response_text = "".join(output) if isinstance(output, list) else str(output)
+            parsed = _parse_json_object(response_text)
+            if not isinstance(parsed, list):
+                continue
+
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                row_id = item.get("row_id")
+                if not isinstance(row_id, int) or row_id < 0 or row_id >= len(chunk):
+                    continue
+                lead = chunk[row_id]
+                for field in ("country", *_STRUCTURED_NOTE_FIELDS):
+                    if (lead.get(field) or "").strip():
+                        continue
+                    value = str(item.get(field, "") or "").strip()
+                    if value:
+                        lead[field] = value[:2000]
+
+    except Exception as e:
+        logger.warning("LLM lead field completion failed: %s", str(e)[:200])
+
+    return leads
 
 
 def _rows_to_dicts(headers: list[str], rows: list[tuple]) -> list[dict]:
@@ -317,7 +448,7 @@ async def _parse_excel(raw_bytes: bytes) -> list[dict]:
             leads.append(lead)
 
     wb.close()
-    return leads
+    return await _complete_structured_fields(leads)
 
 
 async def _parse_csv(raw_bytes: bytes) -> list[dict]:
@@ -359,7 +490,7 @@ async def _parse_csv(raw_bytes: bytes) -> list[dict]:
                 lead["match_score"] = _try_parse_match_score(lead.get("match_score", ""))
             leads.append(lead)
 
-    return leads
+    return await _complete_structured_fields(leads)
 
 
 async def _parse_docx(raw_bytes: bytes) -> list[dict]:
@@ -398,4 +529,4 @@ async def _parse_docx(raw_bytes: bytes) -> list[dict]:
                     lead["match_score"] = _try_parse_match_score(lead.get("match_score", ""))
                 leads.append(lead)
 
-    return leads
+    return await _complete_structured_fields(leads)
