@@ -338,6 +338,24 @@ export async function getConversationMessages(
 
 // ─── Tasks ────────────────────────────────────────────────────────────
 
+export async function renameConversation(
+  conversationId: number,
+  title: string
+): Promise<ConversationListItem> {
+  return apiFetch<ConversationListItem>(`/api/conversations/${conversationId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteConversation(
+  conversationId: number
+): Promise<{ deleted: boolean }> {
+  return apiFetch<{ deleted: boolean }>(`/api/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getTasks(params?: {
   page?: number;
   pageSize?: number;

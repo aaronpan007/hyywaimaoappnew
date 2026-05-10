@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.models.conversation import Conversation, ConversationMessage
 
@@ -49,6 +49,31 @@ async def get_messages(db, conversation_id: int, user_id: int) -> list[Conversat
         .order_by(ConversationMessage.sort_order.asc())
     )
     return list(result.scalars().all())
+
+
+async def update_conversation_title(db, conversation_id: int, user_id: int, title: str) -> Conversation | None:
+    """Rename a conversation owned by the user."""
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user_id:
+        return None
+
+    conv.title = title.strip()[:255] or conv.title
+    conv.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(conv)
+    return conv
+
+
+async def delete_conversation(db, conversation_id: int, user_id: int) -> bool:
+    """Delete a conversation and its messages if owned by the user."""
+    conv = await db.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user_id:
+        return False
+
+    await db.execute(delete(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id))
+    await db.delete(conv)
+    await db.commit()
+    return True
 
 
 async def create_conversation(

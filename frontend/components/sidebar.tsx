@@ -10,6 +10,9 @@ import {
   ChevronRight,
   LogOut,
   CircleUserRound,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import type { NavItem, ChatHistoryItem } from "@/types";
 
@@ -19,6 +22,8 @@ interface SidebarProps {
   chatHistory: ChatHistoryItem[];
   activeSessionId: string | null;
   onSelectChat: (sessionId: string) => void;
+  onRenameChat: (sessionId: string, title: string) => void;
+  onDeleteChat: (sessionId: string) => void;
   userEmail?: string;
   onSignOut: () => void;
 }
@@ -29,9 +34,28 @@ export default function Sidebar({
   chatHistory,
   activeSessionId,
   onSelectChat,
+  onRenameChat,
+  onDeleteChat,
   userEmail,
   onSignOut,
 }: SidebarProps) {
+  const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
+
+  const handleRename = (item: ChatHistoryItem) => {
+    setOpenMenuId(null);
+    const nextTitle = window.prompt("重命名聊天记录", item.title)?.trim();
+    if (nextTitle && nextTitle !== item.title) {
+      onRenameChat(item.id, nextTitle);
+    }
+  };
+
+  const handleDelete = (item: ChatHistoryItem) => {
+    setOpenMenuId(null);
+    if (window.confirm(`删除“${item.title}”这条聊天记录吗？`)) {
+      onDeleteChat(item.id);
+    }
+  };
+
   return (
     <aside className="w-sidebar h-full bg-surface-side-bg flex flex-col border-r border-text-border shrink-0">
       {/* Brand */}
@@ -119,17 +143,57 @@ export default function Sidebar({
       {/* Chat History */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {chatHistory.map((item) => (
-          <button
+          <div
             key={item.id}
-            onClick={() => onSelectChat(item.id)}
-            className={`w-full flex items-center px-3 py-1.5 rounded-lg text-[13px] transition-colors duration-150 group ${
+            className="relative group"
+          >
+            <button
+              onClick={() => onSelectChat(item.id)}
+              className={`w-full flex items-center px-3 py-1.5 pr-8 rounded-lg text-[13px] transition-colors duration-150 ${
               item.id === activeSessionId
                 ? "bg-brand-blue-light text-brand-blue"
                 : "text-text-secondary hover:bg-gray-100"
-            }`}
-          >
-            <span className="truncate flex-1 text-left">{item.title}</span>
-          </button>
+              }`}
+            >
+              <span className="truncate flex-1 text-left">{item.title}</span>
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenMenuId((current) => (current === item.id ? null : item.id));
+              }}
+              className={`absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-text-tertiary transition hover:bg-white hover:text-text-primary ${
+                openMenuId === item.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              }`}
+              aria-label="聊天记录操作"
+            >
+              <MoreHorizontal size={16} />
+            </button>
+            {openMenuId === item.id && (
+              <div
+                className="absolute right-1.5 top-7 z-20 w-32 rounded-lg border border-text-border bg-white py-1 shadow-lg"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleRename(item)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-text-primary hover:bg-gray-50"
+                >
+                  <Pencil size={14} />
+                  重命名
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(item)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 size={14} />
+                  删除
+                </button>
+              </div>
+            )}
+          </div>
         ))}
       </div>
 

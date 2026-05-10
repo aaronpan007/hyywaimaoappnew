@@ -3,6 +3,10 @@ from datetime import datetime
 from app.schemas.common import CamelModel
 
 
+class UpdateConversationRequest(CamelModel):
+    title: str
+
+
 class ConversationListItem(CamelModel):
     id: int
     title: str

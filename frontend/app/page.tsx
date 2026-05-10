@@ -19,6 +19,8 @@ import {
   stopTask,
   getConversations,
   getConversationMessages,
+  renameConversation,
+  deleteConversation,
 } from "@/lib/api";
 import type {
   ConversationMessageResponse,
@@ -192,6 +194,56 @@ export default function Home() {
   }, [activeSessionId, sessions]);
 
   // ─── Create session ──────────────────────────────────────────────
+  const handleRenameSession = useCallback(async (sessionId: string, title: string) => {
+    const nextTitle = title.trim();
+    if (!nextTitle) return;
+
+    const session = sessions.find((s) => s.id === sessionId);
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, title: nextTitle } : s))
+    );
+
+    if (session?.dbId) {
+      try {
+        await renameConversation(session.dbId, nextTitle);
+      } catch (error) {
+        console.error("Failed to rename conversation:", error);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, title: session.title } : s))
+        );
+        alert("重命名失败，请稍后重试");
+      }
+    }
+  }, [sessions]);
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const session = sessions.find((s) => s.id === sessionId);
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(null);
+      setActiveNav("new-chat");
+      setView("welcome");
+      if (streamingSessionRef.current === sessionId) {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        streamingSessionRef.current = null;
+        isStreamingRef.current = false;
+        currentTaskIdRef.current = null;
+      }
+    }
+
+    if (session?.dbId) {
+      try {
+        await deleteConversation(session.dbId);
+      } catch (error) {
+        console.error("Failed to delete conversation:", error);
+        setSessions((prev) => [session, ...prev]);
+        alert("删除失败，请稍后重试");
+      }
+    }
+  }, [activeSessionId, sessions]);
+
   const handleCreateSession = useCallback(
     (title?: string) => {
       const id = `session-${Date.now()}`;
@@ -1379,6 +1431,8 @@ export default function Home() {
         chatHistory={chatHistory}
         activeSessionId={activeSessionId}
         onSelectChat={handleSelectSession}
+        onRenameChat={handleRenameSession}
+        onDeleteChat={handleDeleteSession}
         userEmail={authSession.user.email}
         onSignOut={handleSignOut}
       />
