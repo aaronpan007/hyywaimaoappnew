@@ -1423,6 +1423,30 @@ GitHub / 服务器状态：
 2. 在客户名单中确认该线索详情/备注保留补充信息。
 3. 生成开发信时确认正文有参考这些补充信息，但仍不编造表格没有的信息。
 
+### 2026-05-10 批量发送引导与投递率备注
+
+测试发现：
+
+- 客户名单中点击“发送邮件”并确认后，会切到新的聊天会话；SSE timeline 出来前页面显得像空白聊天框，缺少明确引导。
+- 本次真实发送成功，但测试邮箱进入垃圾邮件，需要后续优化发信域名、认证、内容和发送节奏。
+
+已修复：
+
+- `frontend/app/page.tsx`：批量发送会话初始消息改为明确引导，说明本次选择客户数、会自动跳过不可发送客户、可在聊天中看进度或回客户名单看状态。
+
+投递率备注：
+
+- Resend 官方建议用子域名发送（如 `updates.yourdomain.com`），用于按发送目的隔离 reputation，并清晰表达发送用途。
+- 当前外贸开发信属于 outreach/cold email，更建议使用专门子域名，例如 `outreach.clientconnet.com` 或 `mail.clientconnet.com`，而不是根域 `clientconnet.com`。
+- 子域名不是“进主收件箱”的保证，还需要 SPF/DKIM/DMARC 正确、逐步 warm-up、控制发送量、降低营销腔、避免过多链接/图片/附件、保持退订/投诉/退信处理。
+
+后续建议：
+
+1. 在 Resend 添加并验证发信子域名，例如 `outreach.clientconnet.com`。
+2. 配置对应 SPF/DKIM/DMARC；确认 Resend dashboard domain 状态为 verified。
+3. 将生产 `MAIL_DOMAIN` / 邮箱配置切到该子域名，发件人如 `sales@outreach.clientconnet.com`，Reply-To 可继续填真实收信邮箱。
+4. 小批量 warm-up，先控制发送量和节奏，再观察 delivered/bounced/complained 与垃圾箱表现。
+
 a91ed29 历史验证清单（清空/入口修复；最新线上版本见上方部署记录）：
 
 1. 在浏览器打开公司资料页，确认按钮已从"重新采集"变成"清空公司资料"。
