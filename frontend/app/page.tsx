@@ -1259,7 +1259,12 @@ export default function Home() {
           {
             id: `guide-${Date.now()}`,
             role: "assistant",
-            content: `正在为选中的 ${leadIds.length} 个客户发送开发信...`,
+            content: [
+              `已创建批量发送任务，本次选择 ${leadIds.length} 个客户。`,
+              "",
+              "系统会按发送确认里的策略执行：只发送已有邮箱且已有开发信的客户；已发送、已送达、退信/投诉、缺邮箱或缺开发信的客户会自动跳过。",
+              "发送过程中可以留在这里查看进度，也可以稍后回到客户名单查看每封邮件的状态。",
+            ].join("\n"),
             timestamp: "刚刚",
           },
         ],
