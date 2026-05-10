@@ -1356,6 +1356,33 @@ GitHub / 服务器状态：
 
 - 已经保存到客户名单里的错误线索不会被代码自动删除，需要在前端客户名单中手动删除，或后续写一次清理脚本按任务 ID/公司名清理。
 
+### 2026-05-10 客户开发地区过滤与历史卡片恢复修复
+
+测试现象：
+
+- 用户要搜索“巴西做铝天花的本土公司”，但客户名单中能看到 United States、Poland、Canada 等非巴西地区结果。
+- 刷新页面后，历史记录里只能看到用户输入的话，看不到之前执行过程的 timeline、确认卡片、完成 callout 和结果入口。
+
+原因判断：
+
+- 客户名单主页面默认展示全部历史线索，会混合之前加拿大任务和本次巴西任务；本次任务结果应优先从完成卡片的“查看客户列表”进入，那里会按 `taskId` 过滤。
+- 但非目标地区结果进入数据库仍不合理，说明保存前的国家过滤需要更硬，同时 Serper 搜索 locale 不能一直固定为 `gl=us`。
+- pipeline 运行过程的 timeline/result callout 原先只通过 SSE 发给当前页面状态，没有在任务完成后写入 `conversation_messages`，所以刷新后历史会话只剩用户消息。
+
+已修复：
+
+- `backend/app/services/pipeline_service.py`：Serper 搜索按目标国家设置 locale，例如 Brazil/Brasil/巴西 -> `gl=br, hl=pt`，Canada/加拿大 -> `gl=ca, hl=en`。
+- `backend/app/services/pipeline_service.py`：保存前继续按目标国家别名强过滤；目标 Brazil 时，United States/Poland/Canada/China 结果不会进入 `ranked` 保存。
+- `backend/app/services/chat_service.py`：任务完成/失败/取消时，把最终 timeline 和 callout 持久化到 `conversation_messages`，刷新历史会话后可恢复卡片和结果入口。
+- `backend/app/services/chat_service.py` 与 `backend/app/routers/chat.py`：确认参数卡片也写入会话历史，避免刷新后确认入口消失。
+
+部署后验证：
+
+1. 拉取新代码并重启后，重新搜索“搜索2家在巴西做铝天花的本土公司，contractor”。
+2. 从本次完成卡片点“查看客户列表”，确认只显示本任务结果，且国家/地区应匹配 Brazil/Brasil/`.br`；如果没有合格巴西本土公司，应返回 0 条而不是保存其他国家。
+3. 刷新页面，再打开历史会话，确认用户消息、timeline、完成 callout 都还在。
+4. 已经误保存的旧 United States/Poland/Canada/PRANCE 线索需要手动删除或后续按 taskId 清理。
+
 a91ed29 历史验证清单（清空/入口修复；最新线上版本见上方部署记录）：
 
 1. 在浏览器打开公司资料页，确认按钮已从"重新采集"变成"清空公司资料"。

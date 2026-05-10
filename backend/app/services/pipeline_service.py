@@ -546,8 +546,27 @@ def _generate_queries(industry: str, country: str, keywords: list[str]) -> list[
     return unique
 
 
-async def _serper_search(query: str, api_key: str) -> list[dict]:
+def _serper_locale(country: str) -> tuple[str, str]:
+    country_lower = (country or "").strip().lower()
+    locale_map = {
+        "brazil": ("br", "pt"),
+        "brasil": ("br", "pt"),
+        "巴西": ("br", "pt"),
+        "canada": ("ca", "en"),
+        "加拿大": ("ca", "en"),
+        "usa": ("us", "en"),
+        "united states": ("us", "en"),
+        "美国": ("us", "en"),
+        "uk": ("gb", "en"),
+        "united kingdom": ("gb", "en"),
+        "英国": ("gb", "en"),
+    }
+    return locale_map.get(country_lower, ("us", "en"))
+
+
+async def _serper_search(query: str, api_key: str, country: str = "") -> list[dict]:
     """Call Serper API and return organic results."""
+    gl, hl = _serper_locale(country)
     headers = {
         "X-API-KEY": api_key,
         "Content-Type": "application/json",
@@ -555,8 +574,8 @@ async def _serper_search(query: str, api_key: str) -> list[dict]:
     payload = {
         "q": query,
         "num": RESULTS_PER_PAGE,
-        "gl": "us",
-        "hl": "en",
+        "gl": gl,
+        "hl": hl,
     }
 
     try:
@@ -767,7 +786,11 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                     progress=int(i / len(queries) * 80),
                 )
 
-                results = await _serper_search(query, settings.serper_api_key)
+                results = await _serper_search(
+                    query,
+                    settings.serper_api_key,
+                    params.get("country", ""),
+                )
 
                 for result in results:
                     if len(companies) >= search_num:

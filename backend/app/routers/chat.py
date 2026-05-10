@@ -61,12 +61,12 @@ async def chat(req: ChatRequest, db: DBSession, user_id: CurrentUser):
         confirm_type = params.get("confirm_type", "customer_acquisition")
         if confirm_type == "email_craft":
             return StreamingResponse(
-                chat_service.confirm_email_craft_stream(params, result["reply"], conversation_id=conv_id),
+                chat_service.confirm_email_craft_stream(params, result["reply"], conversation_id=conv_id, db=db),
                 media_type="text/event-stream",
                 headers=chat_service.SSE_HEADERS,
             )
         return StreamingResponse(
-            chat_service.confirm_params_stream(params, result["reply"], conversation_id=conv_id),
+            chat_service.confirm_params_stream(params, result["reply"], conversation_id=conv_id, db=db),
             media_type="text/event-stream",
             headers=chat_service.SSE_HEADERS,
         )

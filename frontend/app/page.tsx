@@ -279,7 +279,7 @@ export default function Home() {
             const msg: ChatMessage = {
               id: `db-${m.id}`,
               role: m.role as "user" | "assistant",
-              content: m.content,
+              content: ["timeline", "callout"].includes(m.messageType) ? "" : m.content,
               timestamp: new Date(m.createdAt).toLocaleString("zh-CN"),
             };
             if (m.extraData) {

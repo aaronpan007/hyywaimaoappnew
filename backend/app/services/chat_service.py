@@ -658,6 +658,80 @@ def _task_failed_callout(task: Task) -> dict:
     }
 
 
+def _timeline_title(task_type: str) -> str:
+    if task_type == "customer-acquisition":
+        return "客户搜索"
+    if task_type == "company-profile":
+        return "公司画像"
+    if task_type == "email-craft":
+        return "开发信撰写"
+    if task_type == "email-blast":
+        return "邮件发送"
+    return task_type
+
+
+def _task_timeline_data(task: Task, logs: list[TaskLog]) -> dict:
+    status = task.status
+    if status not in ("completed", "failed", "cancelled"):
+        status = "running"
+    return {
+        "taskType": task.type,
+        "title": _timeline_title(task.type),
+        "status": status,
+        "steps": [
+            {
+                "number": log.step_number,
+                "name": log.step_name,
+                "status": log.status,
+                "message": log.message,
+                "progress": log.progress,
+            }
+            for log in logs
+        ],
+    }
+
+
+async def _save_task_history_once(
+    db,
+    conversation_id: int | None,
+    task: Task,
+    logs: list[TaskLog],
+    callout: dict,
+) -> None:
+    if conversation_id is None:
+        return
+
+    marker = f"task:{task.id}"
+    result = await db.execute(
+        select(ConversationMessage.id).where(
+            ConversationMessage.conversation_id == conversation_id,
+            ConversationMessage.role == "assistant",
+            ConversationMessage.content.in_([f"{marker}:timeline", f"{marker}:callout"]),
+        )
+    )
+    existing = set(result.scalars().all())
+    if existing:
+        return
+
+    await save_message(
+        db,
+        conversation_id,
+        role="assistant",
+        content=f"{marker}:timeline",
+        message_type="timeline",
+        extra_data=_task_timeline_data(task, logs),
+    )
+    saved_callout = {**callout, "taskId": task.id}
+    await save_message(
+        db,
+        conversation_id,
+        role="assistant",
+        content=f"{marker}:callout",
+        message_type="callout",
+        extra_data=saved_callout,
+    )
+
+
 async def stream_task_progress(task_id: int, db, conversation_id: int | None = None) -> AsyncGenerator[str, None]:
     """Poll task_logs from DB and push SSE events."""
     yield sse_format("thinking", {})
@@ -673,7 +747,8 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
             .where(TaskLog.task_id == task_id)
             .order_by(TaskLog.step_number, TaskLog.id)
         )
-        for log in result.scalars().all():
+        final_logs = list(result.scalars().all())
+        for log in final_logs:
             yield sse_format(
                 "step_update",
                 {
@@ -692,6 +767,8 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
             callout = _task_cancelled_callout()
         else:
             callout = _task_failed_callout(task)
+
+        await _save_task_history_once(db, conversation_id, task, final_logs, callout)
 
         yield sse_format(
             "result",
@@ -763,11 +840,18 @@ async def stream_task_progress(task_id: int, db, conversation_id: int | None = N
             break
 
         if task.status in ("completed", "failed"):
+            result = await db.execute(
+                select(TaskLog)
+                .where(TaskLog.task_id == task_id)
+                .order_by(TaskLog.step_number, TaskLog.id)
+            )
+            final_logs = list(result.scalars().all())
             callout = (
                 _task_completed_callout(task)
                 if task.status == "completed"
                 else _task_failed_callout(task)
             )
+            await _save_task_history_once(db, conversation_id, task, final_logs, callout)
             yield sse_format(
                 "result",
                 {"task_id": task_id, "type": "callout", "callout": callout},
@@ -814,19 +898,31 @@ async def config_error_stream(missing: list[str], conversation_id: int | None = 
     yield sse_format("done", done_data)
 
 
-async def confirm_params_stream(params: dict, reply: str, conversation_id: int | None = None) -> AsyncGenerator[str, None]:
+async def confirm_params_stream(
+    params: dict,
+    reply: str,
+    conversation_id: int | None = None,
+    db=None,
+) -> AsyncGenerator[str, None]:
     """SSE stream for customer acquisition parameter confirmation."""
     yield sse_format("thinking", {})
-    yield sse_format(
-        "confirm_params",
-        {
-            "industry": params.get("industry", ""),
-            "country": params.get("country", ""),
-            "keywords": params.get("keywords", []),
-            "num": params.get("num", 20),
-            "reply": reply,
-        },
-    )
+    confirm_data = {
+        "industry": params.get("industry", ""),
+        "country": params.get("country", ""),
+        "keywords": params.get("keywords", []),
+        "num": params.get("num", 20),
+        "reply": reply,
+    }
+    yield sse_format("confirm_params", confirm_data)
+    if conversation_id is not None and db is not None:
+        await save_message(
+            db,
+            conversation_id,
+            role="assistant",
+            content=reply,
+            message_type="confirm_params",
+            extra_data=confirm_data,
+        )
     done_data: dict = {}
     if conversation_id is not None:
         done_data["conversationId"] = conversation_id
@@ -979,18 +1075,35 @@ async def _count_user_leads(db, user_id: int) -> int:
     return result.scalar() or 0
 
 
-async def confirm_email_craft_stream(params: dict, reply: str, conversation_id: int | None = None) -> AsyncGenerator[str, None]:
+async def confirm_email_craft_stream(
+    params: dict,
+    reply: str,
+    conversation_id: int | None = None,
+    db=None,
+) -> AsyncGenerator[str, None]:
     """SSE stream for email-craft confirmation card."""
     yield sse_format("thinking", {})
-    yield sse_format(
-        "confirm_params",
-        {
-            "confirm_type": "email_craft",
-            "lead_count": params.get("lead_count", 0),
-            "language": params.get("language", "en"),
-            "reply": reply,
-        },
-    )
+    confirm_data = {
+        "confirm_type": "email_craft",
+        "lead_count": params.get("lead_count", 0),
+        "language": params.get("language", "en"),
+        "reply": reply,
+    }
+    yield sse_format("confirm_params", confirm_data)
+    if conversation_id is not None and db is not None:
+        await save_message(
+            db,
+            conversation_id,
+            role="assistant",
+            content=reply,
+            message_type="confirm_email_craft",
+            extra_data={
+                "confirmType": "email_craft",
+                "leadCount": params.get("lead_count", 0),
+                "language": params.get("language", "en"),
+                "reply": reply,
+            },
+        )
     done_data: dict = {}
     if conversation_id is not None:
         done_data["conversationId"] = conversation_id
