@@ -1181,7 +1181,7 @@ export default function Home() {
 
   // ─── Email-craft confirm from card (with optional uploaded files) ──
   const onConfirmEmailCraftProp = useCallback(
-    (files?: { filename: string; data: string }[]) => {
+    (files?: { filename: string; data: string }[], userRequirements?: string) => {
       const pending = pendingConfirmRef.current;
       if (!pending) return;
       // Get the confirm data from the message
@@ -1195,7 +1195,7 @@ export default function Home() {
         {
           leadCount: confirmData?.leadCount || confirmData?.num || 0,
           language: confirmData?.language || "en",
-          userRequirements: confirmData?.userRequirements || "",
+          userRequirements: userRequirements || confirmData?.userRequirements || "",
         },
         files
       );
@@ -1459,15 +1459,19 @@ export default function Home() {
           onConfirmParams={onConfirmParamsProp}
           onConfirmEmailCraft={onConfirmEmailCraftProp}
           onCancelConfirm={onCancelConfirmProp}
-          onGoToCustomerList={() => {
-            // Save userRequirements from confirm card before navigating
-            const pending = pendingConfirmRef.current;
-            if (pending) {
-              const session = sessions.find((s) => s.id === pending.sessionId);
-              const msg = session?.messages.find((m) => m.id === pending.confirmMsgId);
-              const confirmData = msg?.confirmParams as any;
-              if (confirmData?.userRequirements) {
-                pendingEmailRequirementsRef.current = confirmData.userRequirements;
+          onGoToCustomerList={(userRequirements?: string) => {
+            // Save userRequirements from confirm card textarea before navigating
+            if (userRequirements) {
+              pendingEmailRequirementsRef.current = userRequirements;
+            } else {
+              const pending = pendingConfirmRef.current;
+              if (pending) {
+                const session = sessions.find((s) => s.id === pending.sessionId);
+                const msg = session?.messages.find((m) => m.id === pending.confirmMsgId);
+                const confirmData = msg?.confirmParams as any;
+                if (confirmData?.userRequirements) {
+                  pendingEmailRequirementsRef.current = confirmData.userRequirements;
+                }
               }
             }
             handleNavChange("customer-list");

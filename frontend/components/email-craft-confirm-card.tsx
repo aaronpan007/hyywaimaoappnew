@@ -6,9 +6,9 @@ import type { EmailCraftConfirmData } from "@/types";
 
 interface EmailCraftConfirmCardProps {
   data: EmailCraftConfirmData;
-  onConfirm: (files?: { filename: string; data: string }[]) => void;
+  onConfirm: (files?: { filename: string; data: string }[], userRequirements?: string) => void;
   onCancel: () => void;
-  onGoToCustomerList?: () => void;
+  onGoToCustomerList?: (userRequirements?: string) => void;
 }
 
 export default function EmailCraftConfirmCard({
@@ -30,9 +30,9 @@ export default function EmailCraftConfirmCard({
 
   const triggerConfirm = useCallback(
     (files?: { filename: string; data: string }[]) => {
-      onConfirm(files);
+      onConfirm(files, userRequirements);
     },
-    [onConfirm]
+    [onConfirm, userRequirements]
   );
 
   const handleFileChange = useCallback(
@@ -130,7 +130,7 @@ export default function EmailCraftConfirmCard({
         <button
           onClick={() => {
             onCancel();
-            onGoToCustomerList?.();
+            onGoToCustomerList?.(userRequirements);
           }}
           className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-blue text-white rounded-lg text-[13px] font-medium hover:bg-brand-blue-hover transition-colors"
         >
