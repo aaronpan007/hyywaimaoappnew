@@ -58,6 +58,7 @@ class StartPipelineRequest(CamelModel):
     industry: str = ""
     country: str = ""
     keywords: list[str] = []
+    customer_types: list[str] | None = None
     num: int = 20
     confirm_type: str = "customer_acquisition"
     language: str = "en"

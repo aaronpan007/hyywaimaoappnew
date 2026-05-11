@@ -28,12 +28,35 @@ from app.models.lead import Lead
 from app.models.task import Task, TaskLog
 from app.services import task_manager
 from app.utils.contact import clean_contact_name
-from app.utils.scraper import scrape_companies_sync
+from app.utils.scraper import scrape_companies_sync, scrape_companies_sync_v2
 
 logger = logging.getLogger(__name__)
 
 SERPER_URL = "https://google.serper.dev/search"
 RESULTS_PER_PAGE = 10
+DEFAULT_CUSTOMER_TYPES = ["manufacturer", "supplier", "company"]
+VALID_CUSTOMER_TYPES = {
+    "manufacturer",
+    "supplier",
+    "distributor",
+    "contractor",
+    "installer",
+    "brand",
+    "competitor",
+    "buyer",
+    "company",
+}
+CUSTOMER_TYPE_TERMS = {
+    "manufacturer": ["manufacturer", "factory", "producer", "maker"],
+    "supplier": ["supplier", "vendor", "provider"],
+    "distributor": ["distributor", "dealer", "reseller", "wholesaler"],
+    "contractor": ["contractor", "fit out company", "construction company"],
+    "installer": ["installer", "installation company"],
+    "brand": ["brand", "systems", "architectural products", "commercial systems"],
+    "competitor": ["brand", "manufacturer", "systems", "architectural products"],
+    "buyer": ["buyer", "importer", "procurement", "purchasing"],
+    "company": ["company"],
+}
 
 # ---------------------------------------------------------------------------
 # AI Analysis
@@ -149,6 +172,16 @@ About页面内容:
 LinkedIn: {company.get('_linkedin', 'N/A')}
 """
 
+    if company.get("_select_reason") or company.get("_role_evidence"):
+        user_prompt += f"""
+
+V2 candidate selection context:
+select_reason: {company.get('_select_reason', '')}
+inferred_role_type: {company.get('_inferred_role_type', '')}
+role_evidence: {company.get('_role_evidence', '')}
+scores: official={company.get('_official_score', '')}, industry={company.get('_industry_score', '')}, country={company.get('_country_score', '')}, role={company.get('_role_score', '')}, contact_likelihood={company.get('_contact_likelihood_score', '')}, website={company.get('_website_score', '')}
+"""
+
     if profile_text:
         user_prompt += (
             "\n\n=== 我司信息（仅用于业务匹配，不是待分析客户） ===\n"
@@ -179,7 +212,7 @@ LinkedIn: {company.get('_linkedin', 'N/A')}
                 response_text = str(output)
 
             analysis = _parse_ai_response(response_text)
-            if analysis is not None:
+            if isinstance(analysis, dict):
                 return analysis
 
             logger.warning(
@@ -207,7 +240,7 @@ LinkedIn: {company.get('_linkedin', 'N/A')}
     }
 
 
-def _parse_ai_response(response_text: str) -> dict | None:
+def _parse_ai_response(response_text: str) -> dict | list | None:
     """Parse AI response, handling markdown code blocks and raw JSON."""
     text = response_text.strip()
 
@@ -221,14 +254,17 @@ def _parse_ai_response(response_text: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON object in the text
-    brace_start = text.find("{")
-    brace_end = text.rfind("}")
-    if brace_start != -1 and brace_end != -1:
-        try:
-            return json.loads(text[brace_start : brace_end + 1])
-        except json.JSONDecodeError:
-            pass
+    # Try to find JSON object or array in the text
+    candidates = [
+        (text.find("{"), text.rfind("}")),
+        (text.find("["), text.rfind("]")),
+    ]
+    for start, end in candidates:
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
 
     return None
 
@@ -498,6 +534,479 @@ def _extract_domain(url: str) -> str:
         return domain
     except Exception:
         return url
+
+
+def _crawler_version() -> str:
+    version = (settings.customer_acquisition_crawler_version or "v1").strip().lower()
+    return "v2" if version == "v2" else "v1"
+
+
+def _normalize_customer_types(raw: object) -> list[str]:
+    if raw is None:
+        return list(DEFAULT_CUSTOMER_TYPES)
+    if isinstance(raw, str):
+        values = re.split(r"[\s,;/|]+", raw)
+    elif isinstance(raw, list):
+        values = [str(item) for item in raw]
+    else:
+        values = []
+    normalized = []
+    for value in values:
+        key = value.strip().lower().replace("-", "_")
+        if key in VALID_CUSTOMER_TYPES and key not in normalized:
+            normalized.append(key)
+    return normalized or list(DEFAULT_CUSTOMER_TYPES)
+
+
+def _customer_type_terms(customer_types: list[str]) -> list[str]:
+    terms: list[str] = []
+    for customer_type in customer_types:
+        for term in CUSTOMER_TYPE_TERMS.get(customer_type, []):
+            if term not in terms:
+                terms.append(term)
+    return terms
+
+
+def _tokens_from_text(value: str) -> list[str]:
+    return [
+        token.lower()
+        for token in re.split(r"[\s,;/|()（）\-]+", value or "")
+        if len(token.strip()) >= 3 or re.search(r"[\u4e00-\u9fff]", token)
+    ]
+
+
+def _fallback_queries_v2(
+    industry: str,
+    country: str,
+    keywords: list[str],
+    customer_types: list[str],
+) -> list[str]:
+    base_terms = [industry.strip()] if industry and industry.strip() else []
+    refinements = [str(k).strip() for k in keywords if str(k).strip()]
+    if refinements:
+        base_terms.extend(refinements[:2])
+    role_terms = _customer_type_terms(customer_types)[:6]
+    queries: list[str] = []
+    for role in role_terms:
+        for base in base_terms[:2] or [industry]:
+            if base and country:
+                queries.append(f"{base} {role} {country}")
+    if industry and country:
+        queries.extend(
+            [
+                f"{industry} systems solutions {country}",
+                f"{industry} architectural systems {country}",
+                f"{industry} company contact {country}",
+            ]
+        )
+    seen: set[str] = set()
+    unique = []
+    for query in queries:
+        q = re.sub(r"\s+", " ", query).strip()
+        key = q.lower()
+        if q and key not in seen:
+            seen.add(key)
+            unique.append(q)
+    return unique[:8] or _generate_queries(industry, country, keywords)
+
+
+def _generate_queries_v2_sync(
+    industry: str,
+    country: str,
+    keywords: list[str],
+    customer_types: list[str],
+) -> list[str]:
+    """Use the model to expand precise V2 search intents. Falls back safely."""
+    fallback = _generate_queries(industry, country, keywords)
+    if not settings.replicate_api_token:
+        return fallback
+
+    role_terms = _customer_type_terms(customer_types)
+    prompt = f"""Expand this B2B customer acquisition search into 5-8 precise Google queries.
+Return only a JSON array of strings.
+
+Industry: {industry}
+Country/region: {country}
+Extra keywords: {keywords}
+Customer types: {customer_types}
+Allowed role terms: {role_terms}
+
+Rules:
+- Every query must include the country/region.
+- Prefer precise commercial/company website intents.
+- Cover manufacturer/factory/producer, supplier/vendor/provider, systems/solutions, distributor/dealer/contractor/installer, and contact/email/inquiry where relevant to the requested customer types.
+- Do not generate generic one-word searches.
+- Do not generate more than 8 queries.
+"""
+    try:
+        output = replicate.run(
+            settings.replicate_model,
+            input={
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You generate precise B2B Google search queries and return strict JSON only.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+        response_text = "".join(output) if isinstance(output, list) else str(output)
+        parsed = _parse_ai_response(response_text)
+        if isinstance(parsed, list):
+            raw_queries = parsed
+        elif isinstance(parsed, dict):
+            raw_queries = parsed.get("queries", [])
+        else:
+            raw_queries = []
+        queries = []
+        for item in raw_queries:
+            query = re.sub(r"\s+", " ", str(item)).strip()
+            if not query:
+                continue
+            if country and country.lower() not in query.lower():
+                query = f"{query} {country}"
+            if len(query.split()) < 3:
+                continue
+            if query.lower() not in {q.lower() for q in queries}:
+                queries.append(query)
+        return queries[:8] or fallback
+    except Exception as e:
+        logger.warning("V2 query expansion failed, fallback to deterministic queries: %s", str(e)[:200])
+        return fallback
+
+
+async def _generate_queries_v2(
+    industry: str,
+    country: str,
+    keywords: list[str],
+    customer_types: list[str],
+) -> list[str]:
+    try:
+        return await asyncio.to_thread(
+            _generate_queries_v2_sync,
+            industry,
+            country,
+            keywords,
+            customer_types,
+        )
+    except Exception as e:
+        logger.warning("V2 query expansion thread failed, fallback to V1 queries: %s", str(e)[:200])
+        return _generate_queries(industry, country, keywords)
+
+
+def _infer_role_type(text: str, customer_types: list[str]) -> tuple[str, str]:
+    text_lower = text.lower()
+    for customer_type in customer_types:
+        for term in CUSTOMER_TYPE_TERMS.get(customer_type, []):
+            if term in text_lower:
+                return customer_type, term
+    for customer_type, terms in CUSTOMER_TYPE_TERMS.items():
+        for term in terms:
+            if term in text_lower:
+                return customer_type, term
+    return "company", ""
+
+
+def _score_search_result_v2(
+    result: dict,
+    industry: str = "",
+    country: str = "",
+    customer_types: list[str] | None = None,
+) -> dict:
+    """Score a Serper result for v2 without changing the v1 URL filter."""
+    url = result.get("link", "") or ""
+    title = result.get("title", "") or ""
+    snippet = result.get("snippet", "") or ""
+    text = f"{title} {snippet} {url}".lower()
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    path = parsed.path.lower()
+
+    customer_types = customer_types or list(DEFAULT_CUSTOMER_TYPES)
+    industry_tokens = _tokens_from_text(industry)
+    country_tokens = _tokens_from_text(country)
+    role_type, role_evidence = _infer_role_type(text, customer_types)
+
+    official_score = 30
+    industry_score = 0
+    country_score = 0
+    role_score = 0
+    contact_likelihood_score = 0
+    result_type = "company_website"
+    should_crawl = True
+    reject_reason = ""
+    select_reasons: list[str] = []
+
+    blocked_social = (
+        "facebook.com", "instagram.com", "linkedin.com", "youtube.com",
+        "x.com", "twitter.com", "tiktok.com", "pinterest.com", "reddit.com",
+    )
+    marketplace_or_directory = (
+        "alibaba.com", "made-in-china.com", "globalsources.com", "amazon.com",
+        "yellowpages.com", "thomasnet.com", "kompass.com", "zoominfo.com",
+        "crunchbase.com", "yelp.com", "hotfrog.com", "foursquare.com",
+    )
+    content_sites = (
+        "wikipedia.org", "medium.com", "blogspot.", "wordpress.com",
+        "news", "press-release", "article", "directory", "catalog",
+    )
+
+    if not url or not parsed.scheme or not domain:
+        result_type = "invalid"
+        should_crawl = False
+        reject_reason = "invalid_url"
+        official_score = 0
+    elif any(site in domain for site in blocked_social):
+        result_type = "social"
+        should_crawl = False
+        reject_reason = "social_result"
+        official_score = 0
+    elif any(site in domain for site in marketplace_or_directory):
+        result_type = "b2b_platform"
+        should_crawl = False
+        reject_reason = "platform_or_directory"
+        official_score = 0
+    elif re.search(r"\.(pdf|jpg|jpeg|png|gif|svg|css|js|zip)(\?|$)", url.lower()):
+        result_type = "file"
+        should_crawl = False
+        reject_reason = "file_result"
+        official_score = 0
+    elif any(token in domain or token in path for token in content_sites):
+        result_type = "content"
+        should_crawl = False
+        reject_reason = "content_or_directory"
+        official_score = 0
+    elif not _is_company_url(url):
+        result_type = "blocked"
+        should_crawl = False
+        reject_reason = "v1_company_url_filter"
+        official_score = 0
+    else:
+        if path in ("", "/"):
+            official_score += 20
+            select_reasons.append("short official-looking URL")
+        if any(word in text for word in ("official", "manufacturer", "supplier", "company", "about us", "contact us")):
+            official_score += 12
+            select_reasons.append("title/snippet looks like a company website")
+        if any(word in text for word in ("products", "services", "solutions", "factory", "wholesale")):
+            industry_score += 10
+            select_reasons.append("contains product/service/system terms")
+        if industry_tokens and any(token in text for token in industry_tokens):
+            industry_score += 25
+            select_reasons.append("matches industry keywords")
+        if country_tokens and any(token in text for token in country_tokens):
+            country_score += 25
+            select_reasons.append("mentions target country/region")
+        tld_hint = f".{country.strip().lower()[:2]}" if country and len(country.strip()) >= 2 else ""
+        if country.lower() == "canada" and domain.endswith(".ca"):
+            country_score += 15
+            select_reasons.append("domain TLD matches Canada")
+        elif country.lower() in ("usa", "united states") and domain.endswith(".us"):
+            country_score += 15
+            select_reasons.append("domain TLD matches United States")
+        elif tld_hint and domain.endswith(tld_hint):
+            country_score += 8
+
+        if role_evidence:
+            role_score += 25 if role_type in customer_types else 12
+            select_reasons.append(f"matches role term: {role_evidence}")
+        if any(word in text for word in ("contact", "email", "phone", "address", "inquiry", "enquiry")):
+            contact_likelihood_score += 18
+            select_reasons.append("has contact-likelihood terms")
+        if any(word in path for word in ("/contact", "/about", "/products", "/services", "/solutions")):
+            contact_likelihood_score += 8
+        if any(word in path for word in ("/blog/", "/news/", "/article/", "/post/")):
+            official_score -= 35
+        if any(word in text for word in ("top 10", "best ", "directory", "list of", "reviews")):
+            official_score -= 25
+
+        score = (
+            official_score * 0.35
+            + industry_score * 0.25
+            + country_score * 0.20
+            + role_score * 0.15
+            + contact_likelihood_score * 0.05
+        )
+        if score < 30:
+            should_crawl = False
+            reject_reason = "low_score"
+    if reject_reason:
+        select_reason = ""
+    else:
+        score = locals().get("score", 0)
+        select_reason = "; ".join(select_reasons[:4]) or "company website candidate selected by V2.1 scoring"
+
+    enriched = dict(result)
+    enriched.update(
+        {
+            "_result_type": result_type,
+            "_official_score": max(0, min(int(official_score), 100)),
+            "_industry_score": max(0, min(int(industry_score), 100)),
+            "_country_score": max(0, min(int(country_score), 100)),
+            "_role_score": max(0, min(int(role_score), 100)),
+            "_contact_likelihood_score": max(0, min(int(contact_likelihood_score), 100)),
+            "_website_score": max(0, min(round(float(locals().get("score", 0)), 1), 100)),
+            "_should_crawl": should_crawl,
+            "_select_reason": select_reason,
+            "_reject_reason": reject_reason,
+            "_role_evidence": role_evidence,
+            "_inferred_role_type": role_type,
+        }
+    )
+    return enriched
+
+
+async def _collect_search_candidates_v1(
+    queries: list[str],
+    api_key: str,
+    country: str,
+    search_num: int,
+    progress_callback=None,
+) -> list[dict]:
+    companies: list[dict] = []
+    seen_domains: set[str] = set()
+
+    for i, query in enumerate(queries):
+        if len(companies) >= search_num:
+            break
+        if progress_callback:
+            await progress_callback(i, query)
+
+        results = await _serper_search(query, api_key, country)
+
+        for result in results:
+            if len(companies) >= search_num:
+                break
+            url = result.get("link", "")
+            if not url or not _is_company_url(url):
+                continue
+            domain = _extract_domain(url)
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            companies.append({
+                "company_name": result.get("title", ""),
+                "website": url,
+                "_domain": domain,
+                "_snippet": result.get("snippet", ""),
+                "_query": query,
+            })
+
+        if i < len(queries) - 1 and len(companies) < search_num:
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+
+    return companies
+
+
+def _select_diverse_candidates_v2(
+    candidates: list[dict],
+    target_num: int,
+    customer_types: list[str],
+) -> list[dict]:
+    ranked = sorted(
+        candidates,
+        key=lambda item: float(item.get("_website_score", 0) or 0),
+        reverse=True,
+    )
+    selected: list[dict] = []
+    selected_domains: set[str] = set()
+    selected_roles: set[str] = set()
+    min_quality_score = 30
+
+    for preferred_role in customer_types:
+        if len(selected) >= target_num:
+            break
+        role_candidates = [
+            candidate
+            for candidate in ranked
+            if candidate.get("_inferred_role_type") == preferred_role
+            and candidate.get("_domain") not in selected_domains
+            and float(candidate.get("_website_score", 0) or 0) >= min_quality_score
+        ]
+        if role_candidates:
+            chosen = role_candidates[0]
+            selected.append(chosen)
+            selected_domains.add(chosen.get("_domain", ""))
+            selected_roles.add(preferred_role)
+
+    for candidate in ranked:
+        if len(selected) >= target_num:
+            break
+        domain = candidate.get("_domain", "")
+        if domain in selected_domains:
+            continue
+        if float(candidate.get("_website_score", 0) or 0) < min_quality_score:
+            continue
+        selected.append(candidate)
+        selected_domains.add(domain)
+        selected_roles.add(candidate.get("_inferred_role_type", "company"))
+
+    return selected[:target_num]
+
+
+async def _collect_search_candidates_v2(
+    queries: list[str],
+    api_key: str,
+    country: str,
+    search_num: int,
+    industry: str = "",
+    customer_types: list[str] | None = None,
+    progress_callback=None,
+) -> list[dict]:
+    candidates: list[dict] = []
+    seen_domains: set[str] = set()
+    customer_types = customer_types or list(DEFAULT_CUSTOMER_TYPES)
+    candidate_pool_size = max(search_num * 4, search_num)
+
+    for i, query in enumerate(queries):
+        if len(candidates) >= candidate_pool_size:
+            break
+        if progress_callback:
+            await progress_callback(i, query)
+
+        results = await _serper_search(query, api_key, country)
+        for raw in results:
+            scored = _score_search_result_v2(raw, industry, country, customer_types)
+            if not scored.get("_should_crawl"):
+                continue
+            url = scored.get("link", "")
+            domain = _extract_domain(url)
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            candidates.append({
+                "company_name": scored.get("title", ""),
+                "website": url,
+                "_domain": domain,
+                "_snippet": scored.get("snippet", ""),
+                "_query": query,
+                "_result_type": scored.get("_result_type", ""),
+                "_website_score": scored.get("_website_score", 0),
+                "_official_score": scored.get("_official_score", 0),
+                "_industry_score": scored.get("_industry_score", 0),
+                "_country_score": scored.get("_country_score", 0),
+                "_role_score": scored.get("_role_score", 0),
+                "_contact_likelihood_score": scored.get("_contact_likelihood_score", 0),
+                "_should_crawl": scored.get("_should_crawl", False),
+                "_select_reason": scored.get("_select_reason", ""),
+                "_reject_reason": scored.get("_reject_reason", ""),
+                "_role_evidence": scored.get("_role_evidence", ""),
+                "_inferred_role_type": scored.get("_inferred_role_type", "company"),
+            })
+            if len(candidates) >= candidate_pool_size:
+                break
+
+        if i < len(queries) - 1 and len(candidates) < search_num:
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+
+    return _select_diverse_candidates_v2(
+        candidates,
+        search_num,
+        customer_types,
+    )
 
 
 def _generate_queries(industry: str, country: str, keywords: list[str]) -> list[str]:
@@ -770,51 +1279,71 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                 progress=0,
             )
 
-            queries = _generate_queries(
-                params.get("industry", ""), params.get("country", ""), params.get("keywords", [])
-            )
-            companies: list[dict] = []
-            seen_domains: set[str] = set()
+            crawler_version = _crawler_version()
+            customer_types = _normalize_customer_types(params.get("customer_types"))
+            if crawler_version == "v2":
+                queries = await _generate_queries_v2(
+                    params.get("industry", ""),
+                    params.get("country", ""),
+                    params.get("keywords", []),
+                    customer_types,
+                )
+            else:
+                queries = _generate_queries(
+                    params.get("industry", ""), params.get("country", ""), params.get("keywords", [])
+                )
 
-            for i, query in enumerate(queries):
-                if len(companies) >= search_num:
-                    break
-
+            async def search_progress(i: int, query: str) -> None:
                 await _update_task_log(
                     db, task_id, step=2,
                     message=f"搜索查询 {i + 1}/{len(queries)}: {query}",
                     progress=int(i / len(queries) * 80),
                 )
+                task_manager.update_heartbeat(task_id)
 
-                results = await _serper_search(
-                    query,
+            if crawler_version == "v2":
+                try:
+                    companies = await _collect_search_candidates_v2(
+                        queries,
+                        settings.serper_api_key,
+                        params.get("country", ""),
+                        search_num,
+                        params.get("industry", ""),
+                        customer_types,
+                        search_progress,
+                    )
+                    if not companies:
+                        raise RuntimeError("v2 search returned no candidates")
+                except Exception as e:
+                    logger.warning(
+                        "customer acquisition crawler v2 search fallback to v1: %s",
+                        str(e)[:200],
+                    )
+                    await _update_task_log(
+                        db, task_id, step=2,
+                        message=f"v2 搜索异常，已回退 v1: {str(e)[:80]}",
+                        progress=80,
+                    )
+                    fallback_queries = _generate_queries(
+                        params.get("industry", ""), params.get("country", ""), params.get("keywords", [])
+                    )
+                    companies = await _collect_search_candidates_v1(
+                        fallback_queries,
+                        settings.serper_api_key,
+                        params.get("country", ""),
+                        search_num,
+                        search_progress,
+                    )
+                    queries = fallback_queries
+                    crawler_version = "v1"
+            else:
+                companies = await _collect_search_candidates_v1(
+                    queries,
                     settings.serper_api_key,
                     params.get("country", ""),
+                    search_num,
+                    search_progress,
                 )
-
-                for result in results:
-                    if len(companies) >= search_num:
-                        break
-                    url = result.get("link", "")
-                    if not url or not _is_company_url(url):
-                        continue
-                    domain = _extract_domain(url)
-                    if domain in seen_domains:
-                        continue
-                    seen_domains.add(domain)
-                    companies.append({
-                        "company_name": result.get("title", ""),
-                        "website": url,
-                        "_domain": domain,
-                        "_snippet": result.get("snippet", ""),
-                        "_query": query,
-                    })
-
-                # Rate limiting
-                if i < len(queries) - 1 and len(companies) < search_num:
-                    await asyncio.sleep(random.uniform(1.0, 2.5))
-
-                task_manager.update_heartbeat(task_id)
 
             await _update_task_log(
                 db, task_id, step=2,
@@ -890,12 +1419,44 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                         str(e)[:200],
                     )
 
-            companies = await asyncio.to_thread(
-                scrape_companies_sync,
-                companies,
-                30,
-                scrape_progress_callback,
-            )
+            scrape_source_companies = [dict(company) for company in companies]
+            if crawler_version == "v2":
+                try:
+                    companies = await asyncio.to_thread(
+                        scrape_companies_sync_v2,
+                        companies,
+                        30,
+                        scrape_progress_callback,
+                    )
+                    v2_scraped_ok = sum(
+                        1 for c in companies if c.get("_scrape_status") != "failed"
+                    )
+                    if v2_scraped_ok == 0:
+                        raise RuntimeError("v2 scraper returned no usable sites")
+                except Exception as e:
+                    logger.warning(
+                        "customer acquisition crawler v2 scrape fallback to v1: %s",
+                        str(e)[:200],
+                    )
+                    await _update_task_log(
+                        db, task_id, step=3,
+                        message=f"v2 抓取异常，已回退 v1: {str(e)[:80]}",
+                        progress=0,
+                    )
+                    companies = await asyncio.to_thread(
+                        scrape_companies_sync,
+                        scrape_source_companies,
+                        30,
+                        scrape_progress_callback,
+                    )
+                    crawler_version = "v1"
+            else:
+                companies = await asyncio.to_thread(
+                    scrape_companies_sync,
+                    companies,
+                    30,
+                    scrape_progress_callback,
+                )
 
             scraped_ok = sum(
                 1 for c in companies if c.get("_scrape_status") != "failed"
@@ -909,6 +1470,32 @@ async def run_pipeline(task_id: int, user_id: int, intent: dict) -> None:
                 if c.get("_description") or c.get("_about_text") or c.get("_products_services")
             ]
             quality_dropped = scraped_ok - len(viable)
+
+            if crawler_version == "v2" and not viable:
+                logger.warning(
+                    "customer acquisition crawler v2 scrape had no viable content; fallback to v1"
+                )
+                await _update_task_log(
+                    db, task_id, step=3,
+                    message="v2 抓取没有可分析正文，已回退 v1",
+                    progress=0,
+                )
+                companies = await asyncio.to_thread(
+                    scrape_companies_sync,
+                    scrape_source_companies,
+                    30,
+                    scrape_progress_callback,
+                )
+                crawler_version = "v1"
+                scraped_ok = sum(
+                    1 for c in companies if c.get("_scrape_status") != "failed"
+                )
+                viable = [c for c in companies if c.get("_scrape_status") != "failed"]
+                viable = [
+                    c for c in viable
+                    if c.get("_description") or c.get("_about_text") or c.get("_products_services")
+                ]
+                quality_dropped = scraped_ok - len(viable)
 
             await _update_task_log(
                 db, task_id, step=3,

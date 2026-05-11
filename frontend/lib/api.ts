@@ -704,6 +704,7 @@ export function startConfirmedPipeline(
     dailyLimit?: number;
     dryRun?: boolean;
     sendMode?: string;
+    customerTypes?: string[];
   },
   handlers: StreamHandlers,
   signal?: AbortSignal

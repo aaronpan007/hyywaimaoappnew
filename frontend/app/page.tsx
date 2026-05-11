@@ -567,6 +567,7 @@ export default function Home() {
       country: string;
       keywords: string[];
       num: number;
+      customerTypes?: string[];
     }) => {
       // Update confirm card message to "starting..."
       updateMessage(sessionId, confirmMsgId, {
@@ -1087,7 +1088,7 @@ export default function Home() {
 
   // ─── Props for confirm params card (via ChatArea → MessageList → MessageBubble) ──
   const onConfirmParamsProp = useCallback(
-    (params: { industry: string; country: string; keywords: string[]; num: number; confirmType?: string; leadCount?: number; language?: string }) => {
+    (params: { industry: string; country: string; keywords: string[]; num: number; confirmType?: string; leadCount?: number; language?: string; customerTypes?: string[] }) => {
       const pending = pendingConfirmRef.current;
       if (!pending) return;
 

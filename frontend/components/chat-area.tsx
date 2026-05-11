@@ -28,6 +28,7 @@ interface ChatAreaProps {
     confirmType?: string;
     leadCount?: number;
     language?: string;
+    customerTypes?: string[];
   }) => void;
   onConfirmEmailCraft?: (files?: { filename: string; data: string }[]) => void;
   onCancelConfirm?: () => void;

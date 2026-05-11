@@ -21,6 +21,7 @@ interface MessageBubbleProps {
     country: string;
     keywords: string[];
     num: number;
+    customerTypes?: string[];
   }) => void;
   onConfirmEmailCraft?: (files?: { filename: string; data: string }[]) => void;
   onCancelConfirm?: () => void;

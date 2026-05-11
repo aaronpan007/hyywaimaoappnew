@@ -6,6 +6,19 @@ export type NavItem = "new-chat" | "customer-list" | "company-profile" | "email-
 // Chat messages
 export type MessageRole = "user" | "assistant";
 
+export const CUSTOMER_TYPE_OPTIONS = [
+  "manufacturer",
+  "supplier",
+  "distributor",
+  "contractor",
+  "installer",
+  "brand",
+  "competitor",
+  "buyer",
+] as const;
+
+export type CustomerType = (typeof CUSTOMER_TYPE_OPTIONS)[number];
+
 export interface ConfirmParamsData {
   industry: string;
   country: string;
@@ -13,6 +26,7 @@ export interface ConfirmParamsData {
   num: number;
   reply: string;
   confirmType?: string;
+  customerTypes?: CustomerType[];
 }
 
 export interface EmailCraftConfirmData {

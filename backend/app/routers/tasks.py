@@ -157,6 +157,7 @@ async def start_pipeline(
             "industry": req.industry,
             "country": req.country,
             "keywords": req.keywords,
+            "customer_types": req.customer_types,
             "num": req.num,
         }
         result = await chat_service.start_pipeline(params, db, user_id)

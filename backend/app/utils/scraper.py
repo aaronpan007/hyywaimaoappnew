@@ -28,6 +28,37 @@ BLOCKED_EMAILS = {
     "webmaster@", "postmaster@", "abuse@", "spam@", "null@",
 }
 
+LOW_VALUE_EMAIL_PREFIXES = {
+    "noreply", "no-reply", "do-not-reply", "donotreply", "example", "test",
+    "privacy", "abuse", "spam", "webmaster", "postmaster",
+    "info-request", "registrar",
+}
+
+PREFERRED_EMAIL_PREFIXES = (
+    "sales", "export", "exports", "business", "bd", "commercial",
+    "contact", "info", "office", "marketing",
+)
+
+SOCIAL_DOMAINS = {
+    "facebook.com": "facebook",
+    "instagram.com": "instagram",
+    "youtube.com": "youtube",
+    "youtu.be": "youtube",
+    "linkedin.com": "linkedin",
+    "x.com": "x",
+    "twitter.com": "x",
+    "tiktok.com": "tiktok",
+    "pinterest.com": "pinterest",
+}
+
+V2_PAGE_PRIORITIES = (
+    ("home", re.compile(r"^/?(?:index\.html?)?$", re.I)),
+    ("contact", re.compile(r"(contact|contact-us|get-in-touch|inquiry|enquiry|support)", re.I)),
+    ("about", re.compile(r"(about|about-us|company|who-we-are|profile)", re.I)),
+    ("products", re.compile(r"(products?|services?|solutions?|capabilities)", re.I)),
+    ("team", re.compile(r"(team|leadership|management|staff|people)", re.I)),
+)
+
 # Navigation link patterns (multilingual)
 NAV_PATTERNS = [
     re.compile(r"(?:about|关于我们|会社概要|회사소개)", re.I),
@@ -78,7 +109,7 @@ def _needs_no_sandbox() -> bool:
 def _extract_domain(url: str) -> str:
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
+        domain = (parsed.hostname or parsed.netloc).lower()
         if domain.startswith("www."):
             domain = domain[4:]
         return domain
@@ -129,6 +160,138 @@ def _extract_linkedin(text: str, url: str) -> str:
     url_matches = LINKEDIN_PATTERN.findall(url)
     if url_matches:
         return f"https://www.{url_matches[0]}"
+    return ""
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().strip(".,;:()[]<>").lower()
+
+
+def _deobfuscate_email_text(text: str) -> str:
+    normalized = text
+    replacements = [
+        (r"\s*\[\s*at\s*\]\s*", "@"),
+        (r"\s*\(\s*at\s*\)\s*", "@"),
+        (r"\s+at\s+", "@"),
+        (r"\s*\[\s*dot\s*\]\s*", "."),
+        (r"\s*\(\s*dot\s*\)\s*", "."),
+        (r"\s+dot\s+", "."),
+    ]
+    for pattern, repl in replacements:
+        normalized = re.sub(pattern, repl, normalized, flags=re.I)
+    return normalized
+
+
+def _is_low_value_email(email: str) -> bool:
+    email_lower = _normalize_email(email)
+    if "@" not in email_lower:
+        return True
+    prefix, domain = email_lower.split("@", 1)
+    if not prefix or not domain or "." not in domain:
+        return True
+    if any(prefix == blocked or prefix.startswith(f"{blocked}.") for blocked in LOW_VALUE_EMAIL_PREFIXES):
+        return True
+    if any(token in email_lower for token in ("example.", "yourdomain", "domain.com", "email.com")):
+        return True
+    if any(token in domain for token in ("sentry", "wixpress.com", "wix.com", "sentry.io")):
+        return True
+    if re.fullmatch(r"[a-f0-9]{20,}", prefix):
+        return True
+    if re.search(r"\.(png|jpe?g|gif|svg|webp|css|js)$", email_lower):
+        return True
+    return False
+
+
+def _email_score(email: str, company_domain: str) -> int:
+    email_lower = _normalize_email(email)
+    prefix, domain = email_lower.split("@", 1)
+    score = 0
+    if company_domain and (domain == company_domain or domain.endswith("." + company_domain)):
+        score += 50
+    if prefix in PREFERRED_EMAIL_PREFIXES:
+        score += 30 + (len(PREFERRED_EMAIL_PREFIXES) - PREFERRED_EMAIL_PREFIXES.index(prefix))
+    elif any(prefix.startswith(p + ".") or prefix.startswith(p + "-") for p in PREFERRED_EMAIL_PREFIXES):
+        score += 20
+    if prefix in ("support", "help"):
+        score -= 15
+    return score
+
+
+def _rank_emails(emails: list[str], company_domain: str) -> list[str]:
+    seen: set[str] = set()
+    valid: list[str] = []
+    for raw in emails:
+        email = _normalize_email(raw)
+        if not email or email in seen or _is_low_value_email(email):
+            continue
+        seen.add(email)
+        valid.append(email)
+    return sorted(valid, key=lambda email: _email_score(email, company_domain), reverse=True)
+
+
+def _extract_emails_v2(text: str, html: str = "", hrefs: list[str] | None = None) -> list[str]:
+    source = " ".join([text or "", html or "", _deobfuscate_email_text(text or "")])
+    emails = EMAIL_PATTERN.findall(source)
+    for href in hrefs or []:
+        if href.lower().startswith("mailto:"):
+            emails.append(href.split(":", 1)[1].split("?", 1)[0])
+    return emails
+
+
+def _is_same_site_url(url: str, company_domain: str) -> bool:
+    domain = _extract_domain(url)
+    return bool(domain and company_domain and (domain == company_domain or domain.endswith("." + company_domain)))
+
+
+def _social_type(url: str) -> str:
+    domain = _extract_domain(url)
+    for social_domain, social_name in SOCIAL_DOMAINS.items():
+        if social_domain in domain:
+            return social_name
+    return ""
+
+
+def _looks_like_share_link(url: str) -> bool:
+    lowered = url.lower()
+    return any(
+        token in lowered
+        for token in (
+            "/share", "sharer", "intent/tweet", "share?url=", "addthis",
+            "pinterest.com/pin/create", "linkedin.com/share",
+        )
+    )
+
+
+def _extract_contact_name(text: str, emails: list[str]) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    title_words = r"(sales|export|business development|manager|director|president|founder|owner|ceo|coo|vp|leader)"
+    generic = {
+        "sales team", "contact us", "customer service", "support team",
+        "export department", "info", "admin", "office",
+    }
+    nav_words = {
+        "contact", "about", "products", "services", "solutions", "share",
+        "facebook", "linkedin", "instagram", "youtube", "twitter", "tiktok",
+    }
+
+    for line in lines:
+        low = line.lower()
+        if len(line) > 180:
+            continue
+        if re.search(title_words, low, re.I):
+            matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b", line)
+            for name in matches:
+                name = re.sub(
+                    r"^(Sales|Export|Business Development|Manager|Director|President|Founder|Owner|CEO|COO|VP|Leader)\s+",
+                    "",
+                    name,
+                    flags=re.I,
+                ).strip()
+                lowered_name = name.lower()
+                if lowered_name in generic or any(word in lowered_name for word in nav_words):
+                    continue
+                if len(name) <= 60:
+                    return name
     return ""
 
 
@@ -360,3 +523,273 @@ def scrape_companies_sync(
     Called via asyncio.to_thread() from the async pipeline.
     """
     return asyncio.run(_scrape_all_async(companies, timeout_s, progress_callback))
+
+
+async def _collect_page_snapshot(page) -> dict:
+    title = await page.title()
+    body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    html = await page.evaluate("() => document.documentElement ? document.documentElement.innerHTML : ''")
+    footer_text = await page.evaluate("() => { const f = document.querySelector('footer'); return f ? f.innerText : ''; }")
+    links = await page.evaluate(
+        """() => Array.from(document.querySelectorAll('a[href]')).map(a => ({
+            href: a.href,
+            text: (a.textContent || '').trim()
+        }))"""
+    )
+    hrefs = [link.get("href", "") for link in links if link.get("href")]
+    return {
+        "title": title or "",
+        "text": body_text or "",
+        "clean_text": _clean_text(body_text or ""),
+        "html": html or "",
+        "footer_text": footer_text or "",
+        "links": links,
+        "hrefs": hrefs,
+    }
+
+
+def _pick_v2_pages(home_url: str, links: list[dict], company_domain: str) -> list[tuple[str, str]]:
+    picked: list[tuple[str, str]] = [("home", home_url)]
+    seen = {home_url.rstrip("/")}
+    candidates: list[tuple[int, str, str]] = []
+
+    for link in links:
+        href = link.get("href", "")
+        text = link.get("text", "")
+        if not href or not _is_same_site_url(href, company_domain):
+            continue
+        clean_href = href.split("#", 1)[0].rstrip("/")
+        if clean_href in seen:
+            continue
+        parsed = urlparse(clean_href)
+        haystack = f"{parsed.path} {text}".lower()
+        for idx, (page_type, pattern) in enumerate(V2_PAGE_PRIORITIES[1:], start=1):
+            if pattern.search(haystack):
+                candidates.append((idx, page_type, clean_href))
+                break
+
+    for _, page_type, href in sorted(candidates, key=lambda item: item[0]):
+        if href in seen:
+            continue
+        picked.append((page_type, href))
+        seen.add(href)
+        if len(picked) >= 5:
+            break
+    return picked
+
+
+def _extract_social_links(links: list[dict]) -> dict[str, str]:
+    socials: dict[str, str] = {}
+    for link in links:
+        href = link.get("href", "")
+        if not href or _looks_like_share_link(href):
+            continue
+        social = _social_type(href)
+        if not social or social in socials:
+            continue
+        if social == "linkedin" and "/company/" not in href.lower():
+            continue
+        socials[social] = href.split("?", 1)[0]
+    return socials
+
+
+async def _scrape_social_public_pages(page, social_links: dict[str, str], timeout_ms: int) -> dict:
+    texts: list[str] = []
+    emails: list[str] = []
+    phones: list[str] = []
+    for social in ("facebook", "instagram", "youtube"):
+        url = social_links.get(social)
+        if not url:
+            continue
+        try:
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if resp and resp.status >= 400:
+                continue
+            snapshot = await _collect_page_snapshot(page)
+            text = snapshot["text"]
+            texts.append(text[:1500])
+            emails.extend(_extract_emails_v2(text, snapshot["html"], snapshot["hrefs"]))
+            phones.extend(_extract_phones(text))
+            await asyncio.sleep(random.uniform(1, 2))
+        except Exception as e:
+            logger.info("Skipped social public page %s: %s", url, str(e)[:120])
+            continue
+    return {
+        "text": "\n".join(texts),
+        "emails": emails,
+        "phones": phones,
+    }
+
+
+async def _scrape_single_company_v2(page, company: dict, timeout_ms: int) -> dict:
+    url = company.get("website", "")
+    if not url:
+        company["_scrape_status"] = "failed"
+        return company
+
+    company_domain = company.get("_domain") or _extract_domain(url)
+    all_text_parts: list[str] = []
+    about_text = ""
+    products_text = ""
+    location = ""
+    description = company.get("_snippet", "")
+    emails: list[str] = []
+    phones: list[str] = []
+    social_links: dict[str, str] = {}
+    pages_scraped = 0
+    errors: list[str] = []
+
+    try:
+        resp = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        if resp and resp.status >= 400:
+            company["_scrape_status"] = "failed"
+            company["_scrape_errors"] = [f"HTTP {resp.status}"]
+            return company
+
+        home = await _collect_page_snapshot(page)
+        if home["title"]:
+            company["company_name"] = home["title"]
+
+        page_targets = _pick_v2_pages(url, home["links"], company_domain)
+        social_links.update(_extract_social_links(home["links"]))
+
+        for page_type, page_url in page_targets:
+            try:
+                if page_type != "home":
+                    resp = await page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    if resp and resp.status >= 400:
+                        continue
+                    snapshot = await _collect_page_snapshot(page)
+                else:
+                    snapshot = home
+
+                pages_scraped += 1
+                text = snapshot["text"]
+                clean_text = snapshot["clean_text"]
+                all_text_parts.append(clean_text[:3000])
+                emails.extend(_extract_emails_v2(text, snapshot["html"], snapshot["hrefs"]))
+                emails.extend(_extract_emails_v2(snapshot["footer_text"]))
+                phones.extend(_extract_phones(text))
+                social_links.update(_extract_social_links(snapshot["links"]))
+
+                if page_type in ("about", "contact", "team") and not about_text:
+                    about_text = clean_text[:3000]
+                if page_type == "products" and not products_text:
+                    products_text = clean_text[:2500]
+                if not description:
+                    description = clean_text[:300]
+                if not location:
+                    location_match = re.search(
+                        r"[\w\s,.-]+(?:Street|St|Ave|Avenue|Blvd|Boulevard|Road|Rd|Drive|Dr|Suite|Ste|Floor|Fl)\s*[\w\s,.-]{5,80}",
+                        text,
+                        re.I,
+                    )
+                    if location_match:
+                        location = location_match.group(0).strip()
+
+                if page_type != "home":
+                    await asyncio.sleep(random.uniform(1, 2))
+            except Exception as e:
+                errors.append(f"{page_type}: {str(e)[:120]}")
+                continue
+
+        ranked_emails = _rank_emails(emails, company_domain)
+        if not ranked_emails or (ranked_emails and _email_score(ranked_emails[0], company_domain) < 20):
+            social_data = await _scrape_social_public_pages(page, social_links, timeout_ms)
+            emails.extend(social_data["emails"])
+            phones.extend(social_data["phones"])
+            all_text_parts.append(social_data["text"])
+            ranked_emails = _rank_emails(emails, company_domain)
+
+        combined_text = "\n".join(all_text_parts)
+        ranked_phones = []
+        seen_phone_digits: set[str] = set()
+        for phone in phones:
+            digits = re.sub(r"\D", "", phone)
+            if len(digits) < 7 or digits in seen_phone_digits:
+                continue
+            seen_phone_digits.add(digits)
+            ranked_phones.append(phone)
+        contact_name = _extract_contact_name(combined_text, ranked_emails)
+
+        company["email"] = ", ".join(ranked_emails[:3])[:200]
+        company["phone"] = ", ".join(ranked_phones[:5])[:200]
+        company["contact_name"] = contact_name
+        company["_scrape_status"] = "full" if pages_scraped >= 3 else "partial"
+        company["_description"] = description
+        company["_about_text"] = about_text or (combined_text[:3000] if combined_text else "")
+        company["_products_services"] = products_text
+        company["_location"] = location
+        company["_linkedin"] = social_links.get("linkedin", "")
+        company["_social_links"] = social_links
+        company["_homepage_text"] = all_text_parts[0][:3000] if all_text_parts else ""
+        company["_v2_pages_scraped"] = pages_scraped
+        company["_scrape_errors"] = errors
+    except Exception as e:
+        logger.warning("v2 failed to scrape %s: %s", url, str(e)[:200])
+        company["_scrape_status"] = "failed"
+        company["_scrape_errors"] = [str(e)[:200]]
+
+    return company
+
+
+async def _scrape_all_async_v2(
+    companies: list[dict],
+    timeout_s: int = 30,
+    progress_callback=None,
+) -> list[dict]:
+    from playwright.async_api import async_playwright
+
+    timeout_ms = timeout_s * 1000
+
+    async with async_playwright() as p:
+        launch_kwargs = {"headless": True}
+        chromium = _find_chromium()
+        if chromium:
+            launch_kwargs["executable_path"] = chromium
+        if _needs_no_sandbox():
+            launch_kwargs["args"] = ["--no-sandbox", "--disable-gpu"]
+
+        browser = await p.chromium.launch(**launch_kwargs)
+
+        for i, company in enumerate(companies):
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1920, "height": 1080},
+            )
+            page = await context.new_page()
+            companies[i] = await _scrape_single_company_v2(page, company, timeout_ms)
+            logger.info(
+                "Scraped v2 %d/%d: %s -> %s",
+                i + 1,
+                len(companies),
+                company.get("_domain", ""),
+                companies[i].get("_scrape_status", "unknown"),
+            )
+            if progress_callback:
+                progress_callback(
+                    i + 1,
+                    len(companies),
+                    company.get("_domain", ""),
+                    companies[i].get("_scrape_status", "unknown"),
+                )
+            await context.close()
+            if i < len(companies) - 1:
+                await asyncio.sleep(random.uniform(1, 3))
+
+        await browser.close()
+
+    return companies
+
+
+def scrape_companies_sync_v2(
+    companies: list[dict],
+    timeout_s: int = 30,
+    progress_callback=None,
+) -> list[dict]:
+    """Synchronous v2 scraper entry point. Keeps v1 available unchanged."""
+    return asyncio.run(_scrape_all_async_v2(companies, timeout_s, progress_callback))

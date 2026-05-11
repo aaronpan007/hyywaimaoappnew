@@ -1371,3 +1371,414 @@ MVP 流程：
 - 新增能力优先放在 lead workspace、lead_service、email_craft_pipeline_service 外围逻辑中。
 - 现有 leads.task_id 含义保持为“来源任务”。
 - 客户名单页面只做读取和聚合展示，不改变上游 pipeline 输出。
+
+---
+
+# 客户开发 Pipeline 爬虫增强 v2 方案
+
+## 1. 背景
+
+当前 SaaS 已经具备客户开发 pipeline，核心流程为：
+
+用户确认参数
+→ run_pipeline()
+→ _generate_queries()
+→ _serper_search()
+→ _is_company_url()
+→ domain 去重
+→ scrape_companies_sync()
+→ _analyze_single_company_sync()
+→ _merge_ai_fields()
+→ _filter_and_rank()
+→ 写入 Lead
+
+当前系统可用，但爬虫部分存在以下问题：
+
+1. Serper 搜索结果质量不稳定；
+2. 有时会搜到 B2B 平台、目录站、新闻页、博客页，而不是真实公司官网；
+3. Playwright 抓取页面价值不稳定；
+4. 邮箱提取主要依赖页面正文，没有系统提取 mailto、footer、contact、about、team 等位置；
+5. 当前只识别 LinkedIn 链接，没有利用官网底部挂出的 Facebook / Instagram / YouTube 等公开社媒页面补充邮箱；
+6. 找不到邮箱时不应该乱猜；
+7. 系统已有多个 pipeline，不能直接大改公共模块。
+
+## 2. 本次目标
+
+本次只优化客户开发 pipeline 的爬虫和公开信息采集能力。
+
+目标：
+
+1. 提高真实官网识别率；
+2. 提高官网公开邮箱命中率；
+3. 提高公开联系人提取率；
+4. 增加官网社媒链接里的公开邮箱补充能力；
+5. 保持最终输出字段不变；
+6. 不影响现有 AI 分析摘要、业务匹配点、开发建议提示词；
+7. 不影响邮件撰写、邮件发送、画像等其他 pipeline；
+8. 支持 v1 / v2 切换；
+9. v2 失败时自动 fallback 到 v1。
+
+## 3. 非目标
+
+本次不做：
+
+1. 不做邮箱猜测；
+2. 不做 SMTP 邮箱验证；
+3. 不接 NeverBounce、ZeroBounce、Hunter 等第三方邮箱验证服务；
+4. 不登录 LinkedIn；
+5. 不自动提交 contact form；
+6. 不抓非公开信息；
+7. 不绕过验证码；
+8. 不修改 Lead 表结构；
+9. 不修改 Task / TaskLog；
+10. 不修改 SSE 事件协议；
+11. 不修改 lead_service.get_leads() 响应结构；
+12. 不重写 AI 分析摘要、业务匹配点、开发建议提示词。
+
+## 4. 核心策略
+
+本次采用保守升级方案：
+
+- v1 保留；
+- v2 新增；
+- 默认 v1；
+- 通过环境变量手动开启 v2；
+- v2 失败自动回退 v1；
+- 结果字段不变；
+- 只提升爬虫输入质量。
+
+建议环境变量：
+
+```bash
+CUSTOMER_ACQUISITION_CRAWLER_VERSION=v1|v2
+```
+
+默认值：
+
+```text
+v1
+```
+
+最终客户名单表格字段保持不变：
+
+- 公司名称
+- 网站
+- 国家/地区
+- 行业
+- 公司角色
+- 联系人
+- 邮箱
+- AI 分析摘要
+- 业务匹配点
+- 开发建议
+
+其中，AI 分析摘要、业务匹配点、开发建议已有成熟提示词，不允许重写。本次只优化爬虫采集层，提高传给 AI 的原始信息质量。
+
+## 5. v1 当前流程
+
+v1 流程：
+
+用户确认参数
+→ run_pipeline()
+→ _generate_queries()
+→ _serper_search()
+→ _is_company_url()
+→ domain 去重
+→ scrape_companies_sync()
+→ _analyze_single_company_sync()
+→ _merge_ai_fields()
+→ _filter_and_rank()
+→ 写入 Lead
+
+## 6. v2 推荐流程
+
+v2 流程：
+
+用户确认参数
+→ run_pipeline()
+→ 读取 CUSTOMER_ACQUISITION_CRAWLER_VERSION
+→ 如果是 v1，走旧逻辑
+→ 如果是 v2，进入增强搜索和增强抓取
+→ Serper 搜索候选评分
+→ 选出 should_crawl=true 的官网
+→ scrape_companies_sync_v2()
+→ 首页 / contact / about / products / team 高价值页面抓取
+→ 公开邮箱、联系人、电话、地址、社媒链接提取
+→ 如果官网无邮箱，则抓取官网挂出的社媒公开页
+→ 从 Facebook / Instagram / YouTube 等公开页面补充邮箱
+→ 返回兼容 company dict
+→ 后续 AI 分析、排序、写库流程保持不变
+
+## 7. v2 重点能力
+
+### 7.1 Serper 搜索结果评分
+
+对 Serper 返回结果增加内部字段：
+
+- result_type
+- website_score
+- should_crawl
+- reject_reason
+
+这些字段只作为 pipeline 内部中间数据，不写入 Lead 表。
+
+加分项：
+
+- title 或 snippet 包含目标行业关键词；
+- title 包含 manufacturer / supplier / company / factory / contractor / distributor / systems；
+- URL 像品牌官网；
+- 页面路径较短；
+- snippet 里出现产品、地址、电话、公司描述；
+- domain 不属于平台站。
+
+扣分项：
+
+- B2B 平台；
+- 黄页；
+- 新闻；
+- 博客；
+- 招聘；
+- PDF；
+- 社媒；
+- 目录站；
+- SEO 文章。
+
+### 7.2 官网高价值页面抓取
+
+每个官网最多抓取 3-5 个高价值页面。
+
+优先级：
+
+1. 首页
+2. contact / contact-us
+3. about / about-us / company
+4. products / services / solutions
+5. team / leadership / management
+6. footer 区域
+
+要求：
+
+- 不全站爬；
+- 单页设置超时；
+- 单家公司失败不影响整体任务；
+- 如果首页或 contact 已找到高质量邮箱，可以减少后续抓取；
+- v1 行为完整保留。
+
+### 7.3 邮箱提取增强
+
+提取来源：
+
+- 页面正文邮箱；
+- mailto 链接；
+- footer 邮箱；
+- contact 页面邮箱；
+- about 页面邮箱；
+- team 页面邮箱；
+- 简单反混淆邮箱，例如 name [at] domain [dot] com。
+
+不允许邮箱猜测。
+
+邮箱过滤：
+
+排除：
+
+- example@
+- test@
+- noreply@
+- no-reply@
+- privacy@
+- abuse@
+- postmaster@
+- webmaster@
+- dns@
+- registrar 相关邮箱
+- 明显第三方平台邮箱
+
+主邮箱排序：
+
+1. 官网同域名邮箱优先；
+2. sales / export / inquiry 优先；
+3. info / contact 次之；
+4. support / marketing 再次；
+5. personal email 最后。
+
+### 7.4 联系人提取增强
+
+只提取公开页面真实出现的联系人。
+
+来源：
+
+- contact 页面；
+- about 页面；
+- team 页面；
+- leadership 页面；
+- 邮箱附近的人名和职位。
+
+原则：
+
+- 不编造联系人；
+- 没有明确联系人就留空；
+- 不把 Sales Team、Manager 这类泛称当成人名。
+
+### 7.5 官网社媒邮箱补充
+
+这是 v2 的重点新增能力。
+
+触发条件：
+
+只有当官网没有找到邮箱，或者只找到低价值邮箱时，才抓取官网挂出的社媒链接。
+
+社媒来源：
+
+只使用官网页面里发现的社媒链接。不从搜索结果里猜账号，避免匹配错公司。
+
+优先级：
+
+1. Facebook
+2. Instagram
+3. YouTube
+4. LinkedIn company page
+5. X / Twitter
+6. TikTok
+7. Pinterest
+
+抓取边界：
+
+- 只抓公开可见内容；
+- 不登录；
+- 不绕过限制；
+- 不点复杂交互；
+- 不抓评论；
+- 不自动私信；
+- 不提交表单。
+
+提取内容：
+
+- 公开邮箱；
+- 电话；
+- 地址；
+- 简介文本；
+- 官网链接。
+
+如果社媒找到邮箱：
+
+- 合并进现有 email 字段；
+- 记录来源到内部字段；
+- 不改变 Lead 表结构；
+- 不影响前端展示。
+
+## 8. 数据结构兼容方案
+
+不做数据库迁移。
+
+v2 可以在内存中的 company dict 增加内部字段：
+
+- result_type
+- website_score
+- should_crawl
+- reject_reason
+- _email_source
+- _social_source
+- _social_links
+- _contact_candidates
+
+这些字段只用于调试、日志、AI 输入清洗，不落 Lead 表。
+
+写库时仍然使用现有 Lead 字段：
+
+- company_name
+- website
+- country
+- industry
+- company_role
+- contact_name
+- email
+- phone
+- ai_summary
+- business_match
+- outreach_suggestion
+- match_score
+
+## 9. Fallback 方案
+
+当 v2 开启时：
+
+1. 优先运行 v2；
+2. 如果 v2 报错，记录 warning 日志；
+3. 如果 v2 返回明显异常，也自动 fallback 到 v1。
+
+异常情况包括：
+
+- v2 搜索候选为 0；
+- 全部 should_crawl=false；
+- 抓取成功数为 0；
+- v2 抛出未捕获异常。
+
+用户侧不新增复杂提示，只保持现有任务体验。
+
+## 10. 不允许改动的内容
+
+本次不允许改动：
+
+- Task / TaskLog 表结构；
+- stream_task_progress()；
+- SSE 事件名；
+- Lead 模型字段语义；
+- lead_service.get_leads()；
+- /api/tasks/start；
+- 邮件撰写 pipeline；
+- 邮件发送 pipeline；
+- 画像 pipeline；
+- AI 分析摘要提示词；
+- 业务匹配点提示词；
+- 开发建议提示词。
+
+## 11. 分阶段实施计划
+
+第一阶段：
+
+- 增加 feature flag；
+- 增加 v2 搜索候选评分；
+- 不接社媒；
+- 验证 v1 默认路径完全不变。
+
+第二阶段：
+
+- 增加 v2 官网 3-5 页抓取；
+- 增强 mailto、footer、contact、about、team 邮箱提取；
+- 增加简单反混淆邮箱提取。
+
+第三阶段：
+
+- 增加公开联系人提取；
+- 只提取真实出现的人名、职位、邮箱附近信息。
+
+第四阶段：
+
+- 增加官网社媒链接识别；
+- 增加 Facebook / Instagram / YouTube 等公开邮箱补充；
+- 只在官网无邮箱时触发。
+
+第五阶段：
+
+- 小范围开启 v2；
+- 对比 v1 / v2 邮箱命中率、抓取耗时、失败率；
+- 决定是否扩大使用。
+
+## 12. 验收标准
+
+v1 验收：
+
+- 默认环境变量为空或 v1 时，旧 pipeline 行为不变；
+- 现有客户开发、邮件撰写、导出 Excel 不受影响。
+
+v2 验收：
+
+- 可以通过环境变量开启；
+- 能提升官网识别质量；
+- 能提取 mailto / footer / contact / about 页面邮箱；
+- 官网无邮箱时，可以从官网挂出的 Facebook / Instagram 等公开社媒页补充邮箱；
+- 不会生成猜测邮箱；
+- v2 失败时可以回退 v1；
+- 最终 Lead 字段结构不变；
+- 前端无需改动或只做最小改动。

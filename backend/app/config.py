@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     replicate_api_token: str = ""
     replicate_model: str = "openai/gpt-4.1-nano"
     serper_api_key: str = ""
+    customer_acquisition_crawler_version: str = "v2"
     resend_api_key: str = ""
     resend_webhook_secret: str = ""
     mail_domain: str = "clientconnet.com"

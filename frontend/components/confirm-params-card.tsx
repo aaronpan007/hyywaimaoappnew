@@ -2,7 +2,19 @@
 
 import React, { useState } from "react";
 import { Search, Plus, X } from "lucide-react";
-import type { ConfirmParamsData } from "@/types";
+import type { ConfirmParamsData, CustomerType } from "@/types";
+import { CUSTOMER_TYPE_OPTIONS } from "@/types";
+
+const CUSTOMER_TYPE_LABELS: Record<CustomerType, string> = {
+  manufacturer: "Manufacturer",
+  supplier: "Supplier",
+  distributor: "Distributor",
+  contractor: "Contractor",
+  installer: "Installer",
+  brand: "Brand",
+  competitor: "Competitor",
+  buyer: "Buyer",
+};
 
 interface ConfirmParamsCardProps {
   initialParams: ConfirmParamsData;
@@ -11,6 +23,7 @@ interface ConfirmParamsCardProps {
     country: string;
     keywords: string[];
     num: number;
+    customerTypes?: CustomerType[];
   }) => void;
   onCancel: () => void;
 }
@@ -25,6 +38,9 @@ export default function ConfirmParamsCard({
   const [keywords, setKeywords] = useState<string[]>(initialParams.keywords);
   const [num, setNum] = useState(initialParams.num);
   const [newKeyword, setNewKeyword] = useState("");
+  const [customerTypes, setCustomerTypes] = useState<CustomerType[]>(
+    initialParams.customerTypes ?? []
+  );
 
   const handleAddKeyword = () => {
     const trimmed = newKeyword.trim();
@@ -36,6 +52,12 @@ export default function ConfirmParamsCard({
 
   const handleRemoveKeyword = (kw: string) => {
     setKeywords((prev) => prev.filter((k) => k !== kw));
+  };
+
+  const toggleCustomerType = (ct: CustomerType) => {
+    setCustomerTypes((prev) =>
+      prev.includes(ct) ? prev.filter((t) => t !== ct) : [...prev, ct]
+    );
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -52,6 +74,7 @@ export default function ConfirmParamsCard({
       country: country.trim(),
       keywords,
       num,
+      customerTypes: customerTypes.length > 0 ? customerTypes : undefined,
     });
   };
 
@@ -157,6 +180,31 @@ export default function ConfirmParamsCard({
               <Plus size={12} />
               添加
             </button>
+          </div>
+        </div>
+
+        {/* Customer Types */}
+        <div>
+          <span className="text-[13px] text-text-secondary mb-1.5 block">
+            客户类型（可选）
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {CUSTOMER_TYPE_OPTIONS.map((ct) => {
+              const active = customerTypes.includes(ct);
+              return (
+                <button
+                  key={ct}
+                  onClick={() => toggleCustomerType(ct)}
+                  className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors ${
+                    active
+                      ? "bg-brand-blue text-white"
+                      : "bg-gray-100 text-text-secondary hover:bg-gray-200"
+                  }`}
+                >
+                  {CUSTOMER_TYPE_LABELS[ct]}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
