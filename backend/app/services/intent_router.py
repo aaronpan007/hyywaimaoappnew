@@ -86,7 +86,7 @@ ROUTER_SYSTEM_PROMPT = """你是一个外贸业务助手的意图识别模块。
     "extracted_lead": {"company_name": "公司名", "website": "网站", "country": "国家", "industry": "行业", "company_role": "公司角色", "contact_name": "联系人", "email": "邮箱", "phone": "电话"}
     如果用户没有提到任何具体客户信息，不要加 extracted_lead。只有明确出现公司名时才添加。
 11. 第一人称公司表述检测：如果用户消息中包含"我们做过"、"我们公司"、"我们有"、"我们的产品"、"我们服务过"、"我们参与"、"我们有资质"等，说明用户在描述自己公司信息，应归为 company_profile（profile_mode=update），而非 customer_acquisition。但此规则仅在没有明确搜索新客户、写邮件或邮件内容注入意图时生效。
-12. email_craft 的 user_requirements：当用户说"开发信里要提XX项目"、"邮件里加上XX"、"邮件中写上我们XX经验"等，action 设为 email_craft，并将具体内容整理为 user_requirements 字段（中文，简洁描述）。如"开发信里要提我们做过白云机场项目"→ user_requirements="在邮件中提到白云机场项目案例"。"""
+12. email_craft 的 user_requirements：当用户的邮件撰写意图中包含具体的内容要求（如"开发信里要提XX"、"邮件里加上XX"、"提及我的名字XX"、"用我的名字XX"、"签名用XX"、"邮件中提到XX"、"写邮件时说XX"等），action 设为 email_craft，并将具体要求整理为 user_requirements 字段（中文，简洁描述）。只要用户在写邮件的语境中提出了额外要求，就必须提取，不要遗漏。如"开发信里要提我们做过白云机场项目"→ user_requirements="在邮件中提到白云机场项目案例"；"提及我的名字LINGYU PAN"→ user_requirements="发件人署名用 LINGYU PAN"。"""
 
 DEFAULT_CHAT_REPLY = "好的，我是您的外贸业务助手。您可以让我帮您找客户、整理公司信息、写开发信或发送邮件。请问有什么可以帮您的？"
 
@@ -166,6 +166,9 @@ def _looks_like_email_craft(message: str) -> bool:
         "邮件里要提", "邮件里要加", "邮件里加上", "邮件里写",
         "邮件中要提", "邮件中加上", "开发信要提", "开发信中提",
         "加到开发信", "写进开发信", "加到邮件里",
+        # General requirement patterns
+        "提及我的名字", "用我的名字", "签名用", "发件人用",
+        "邮件中提到", "写邮件时说", "邮件中写上", "邮件里写",
     ]
     return any(trigger in text for trigger in triggers)
 
@@ -173,6 +176,7 @@ def _looks_like_email_craft(message: str) -> bool:
 def _extract_email_requirements(message: str) -> str:
     """Extract user requirements for email crafting from the message.
     E.g., '开发信里要提我们公司做过白云机场项目' → '在邮件中提到我们公司做过白云机场项目'
+    E.g., '提及我的名字LINGYU PAN' → '发件人署名用 LINGYU PAN'
     """
     text = (message or "").strip()
     # Remove the trigger phrase and keep the requirement
@@ -181,13 +185,19 @@ def _extract_email_requirements(message: str) -> str:
         "邮件里要提", "邮件里要加上", "邮件里加上", "邮件里写上",
         "邮件中要提", "邮件中加上", "开发信要提", "开发信中提",
         "加到开发信里", "写进开发信里", "加到邮件里",
+        # General requirement patterns
+        "提及我的名字", "用我的名字", "签名用", "发件人用",
+        "邮件中提到", "写邮件时说", "邮件中写上", "邮件里写",
     ]
     for trigger in triggers:
         if trigger in text:
-            # Find where the trigger ends and take everything after
             idx = text.index(trigger) + len(trigger)
             requirement = text[idx:].strip().rstrip("。，,.")
             if requirement:
+                # Check if it's a name/signature request
+                name_trigger = ("提及我的名字", "用我的名字", "签名用", "发件人用")
+                if any(nt in text[:idx + len(trigger)] for nt in name_trigger):
+                    return f"发件人署名用 {requirement}"
                 return f"在邮件中{requirement}"
             break
     return ""
@@ -270,6 +280,9 @@ def _has_email_craft_intent(message: str) -> bool:
         "邮件里要提", "邮件里要加", "邮件里加上", "邮件里写",
         "邮件中要提", "邮件中加上", "开发信要提", "开发信中提",
         "加到开发信", "写进开发信", "加到邮件里",
+        # General requirement patterns
+        "提及我的名字", "用我的名字", "签名用", "发件人用",
+        "邮件中提到", "写邮件时说", "邮件中写上", "邮件里写",
     ]
     return any(t in text for t in craft_triggers)
 
