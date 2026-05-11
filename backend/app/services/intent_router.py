@@ -519,6 +519,12 @@ def _normalize_result(result: dict, source_message: str = "") -> dict:
             lang = "en"
         params["language"] = lang
 
+        # Fallback: if LLM didn't return user_requirements, extract from message
+        if not params.get("user_requirements") and source_message:
+            user_req = _extract_email_requirements(source_message)
+            if user_req:
+                params["user_requirements"] = user_req
+
         # Validate extracted_lead: only keep if company_name is present
         extracted = params.get("extracted_lead")
         if isinstance(extracted, dict) and extracted.get("company_name"):
