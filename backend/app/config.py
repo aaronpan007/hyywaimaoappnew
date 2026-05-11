@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/waimao"
     replicate_api_token: str = ""
     replicate_model: str = "openai/gpt-4.1-nano"
+    replicate_model_advanced: str = "openai/gpt-5.4"
     serper_api_key: str = ""
     customer_acquisition_crawler_version: str = "v2"
     resend_api_key: str = ""

@@ -66,6 +66,7 @@ class StartPipelineRequest(CamelModel):
     lead_ids: list[int] | None = None
     source_task_id: int | None = None
     conversation_id: int | None = None
+    user_requirements: str = ""
     delay_min: int = 60
     delay_max: int = 120
     daily_limit: int = 50

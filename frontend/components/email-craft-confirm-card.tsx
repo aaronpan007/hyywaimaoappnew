@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useCallback } from "react";
+import React, { useRef, useState, useCallback } from "react";
 import { PenLine, Upload, Users } from "lucide-react";
 import type { EmailCraftConfirmData } from "@/types";
 
@@ -18,12 +18,22 @@ export default function EmailCraftConfirmCard({
   onGoToCustomerList,
 }: EmailCraftConfirmCardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [userRequirements, setUserRequirements] = useState(
+    data.userRequirements || ""
+  );
 
   const langText = data.language === "cn" ? "中文" : "英文";
 
   const handleUploadClick = () => {
     fileInputRef.current?.click();
   };
+
+  const triggerConfirm = useCallback(
+    (files?: { filename: string; data: string }[]) => {
+      onConfirm(files);
+    },
+    [onConfirm]
+  );
 
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -45,7 +55,7 @@ export default function EmailCraftConfirmCard({
 
       try {
         const uploadedFiles = await Promise.all(filePromises);
-        onConfirm(uploadedFiles);
+        triggerConfirm(uploadedFiles);
       } catch {
         alert("文件读取失败，请重试");
       }
@@ -55,7 +65,7 @@ export default function EmailCraftConfirmCard({
         fileInputRef.current.value = "";
       }
     },
-    [onConfirm]
+    [triggerConfirm]
   );
 
   return (
@@ -82,6 +92,20 @@ export default function EmailCraftConfirmCard({
         <span className="text-[13px] text-text-secondary">
           您有 <span className="font-medium text-text-primary">{data.leadCount}</span> 条线索，{langText}开发信
         </span>
+      </div>
+
+      {/* User requirements input */}
+      <div className="mb-3 pl-1">
+        <label className="block text-[12px] text-text-secondary mb-1">
+          补充要求（可选）
+        </label>
+        <textarea
+          value={userRequirements}
+          onChange={(e) => setUserRequirements(e.target.value)}
+          placeholder="例如：邮件中提到我们做过白云机场项目、语气正式一些..."
+          rows={2}
+          className="w-full px-3 py-2 text-[13px] text-text-primary border border-text-border rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-brand-blue focus:border-brand-blue placeholder:text-text-placeholder bg-transparent"
+        />
       </div>
 
       {/* Hidden file input */}

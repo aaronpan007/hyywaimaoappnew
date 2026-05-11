@@ -34,6 +34,7 @@ export interface EmailCraftConfirmData {
   leadCount: number;
   language: string;
   reply: string;
+  userRequirements?: string;
 }
 
 export interface ChatMessage {

@@ -51,6 +51,8 @@ def _is_generic_profile_request(message: str, params: dict) -> bool:
         "采集",
         "一个",
         "一下",
+        "修改",
+        "公司信息",
         "公司画像",
         "企业画像",
         "公司资料",
@@ -127,6 +129,38 @@ async def start_chat(
     if action == "chat":
         return {"type": "chat", "reply": reply, "conversation_id": conv_id}
 
+    if action == "view_profile":
+        current = await get_current_profile(db, user_id)
+        if current:
+            profile_data = current.profile_data or {}
+            stats = []
+            name = profile_data.get("company_name", "")
+            if name:
+                stats.append(f"公司: {name}")
+            industry = profile_data.get("industry", "")
+            if industry:
+                stats.append(f"行业: {industry}")
+            products = profile_data.get("products", [])
+            if isinstance(products, list) and products:
+                stats.append(f"产品线 {len(products)} 个")
+            cases = profile_data.get("cases", [])
+            if isinstance(cases, list) and cases:
+                stats.append(f"案例 {len(cases)} 个")
+            callout = {
+                "icon": "building2",
+                "title": "公司资料",
+                "summary": name or "公司画像已建立",
+                "stats": stats,
+                "actions": [{"label": "查看公司资料", "variant": "filled", "type": "view-profile"}],
+            }
+            return {"type": "callout", "callout": callout, "conversation_id": conv_id}
+        else:
+            return {
+                "type": "chat",
+                "reply": "您还没有建立公司画像。请提供公司官网或资料，我来帮您整理。",
+                "conversation_id": conv_id,
+            }
+
     if action == "company_profile":
         if not settings.replicate_api_token:
             raise ConfigRequiredError(["replicate_api_token"])
@@ -139,6 +173,16 @@ async def start_chat(
                     "可以，我先帮您准备公司画像采集。请直接发公司官网 URL，"
                     "或补充公司名称/所在地/行业、主营产品、核心优势、资质认证、典型案例、合作模式、目标客户等资料；"
                     "我会按 company-profile skill 的完整度标准整理成后续客户匹配和开发信可直接调用的销售能力档案。"
+                ),
+                "conversation_id": conv_id,
+            }
+        # Handle LLM-returned needs_clarification flag
+        if intent.get("needs_clarification") or params.get("needs_clarification"):
+            return {
+                "type": "chat",
+                "reply": (
+                    "好的，请告诉我您想修改或补充什么内容？例如：公司简介、产品信息、案例、资质认证等。"
+                    "您也可以直接发送具体内容，我会更新到公司画像中。"
                 ),
                 "conversation_id": conv_id,
             }
@@ -246,14 +290,18 @@ async def start_chat(
                 "conversation_id": conv_id,
             }
         language = params.get("language", "en")
+        user_requirements = params.get("user_requirements", "")
         # Return confirm card directing to customer list
+        confirm_params = {
+            "confirm_type": "email_craft",
+            "lead_count": lead_count,
+            "language": language,
+        }
+        if user_requirements:
+            confirm_params["user_requirements"] = user_requirements
         return {
             "type": "confirm",
-            "params": {
-                "confirm_type": "email_craft",
-                "lead_count": lead_count,
-                "language": language,
-            },
+            "params": confirm_params,
             "reply": reply,
             "conversation_id": conv_id,
         }
@@ -1083,26 +1131,32 @@ async def confirm_email_craft_stream(
 ) -> AsyncGenerator[str, None]:
     """SSE stream for email-craft confirmation card."""
     yield sse_format("thinking", {})
+    user_requirements = params.get("user_requirements", "")
     confirm_data = {
         "confirm_type": "email_craft",
         "lead_count": params.get("lead_count", 0),
         "language": params.get("language", "en"),
         "reply": reply,
     }
+    if user_requirements:
+        confirm_data["user_requirements"] = user_requirements
     yield sse_format("confirm_params", confirm_data)
     if conversation_id is not None and db is not None:
+        extra = {
+            "confirmType": "email_craft",
+            "leadCount": params.get("lead_count", 0),
+            "language": params.get("language", "en"),
+            "reply": reply,
+        }
+        if user_requirements:
+            extra["userRequirements"] = user_requirements
         await save_message(
             db,
             conversation_id,
             role="assistant",
             content=reply,
             message_type="confirm_email_craft",
-            extra_data={
-                "confirmType": "email_craft",
-                "leadCount": params.get("lead_count", 0),
-                "language": params.get("language", "en"),
-                "reply": reply,
-            },
+            extra_data=extra,
         )
     done_data: dict = {}
     if conversation_id is not None:
@@ -1128,6 +1182,7 @@ async def start_email_craft_pipeline(params: dict, db, user_id: int) -> dict:
             "lead_count": params.get("lead_count", 0),
             "lead_ids": params.get("lead_ids") or [],
             "source_task_id": params.get("source_task_id"),
+            "user_requirements": params.get("user_requirements", ""),
         },
     )
     db.add(task)

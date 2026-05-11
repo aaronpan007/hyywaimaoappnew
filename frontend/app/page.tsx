@@ -59,6 +59,7 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const currentTaskIdRef = useRef<number | null>(null);
   const pendingConfirmRef = useRef<{ confirmMsgId: string; sessionId: string } | null>(null);
+  const pendingEmailRequirementsRef = useRef<string>("");
 
   // ─── Derived state ───────────────────────────────────────────────
   const isStreaming = streamingSessionRef.current === activeSessionId;
@@ -1110,7 +1111,7 @@ export default function Home() {
     async (
       confirmMsgId: string,
       sessionId: string,
-      params: { leadCount?: number; language?: string },
+      params: { leadCount?: number; language?: string; userRequirements?: string },
       files?: { filename: string; data: string }[]
     ) => {
       updateMessage(sessionId, confirmMsgId, {
@@ -1134,6 +1135,7 @@ export default function Home() {
           confirmType: "email_craft",
           language: params.language || "en",
           num: params.leadCount || 0,
+          userRequirements: params.userRequirements || "",
           files,
           conversationId: existingDbId,
         },
@@ -1193,6 +1195,7 @@ export default function Home() {
         {
           leadCount: confirmData?.leadCount || confirmData?.num || 0,
           language: confirmData?.language || "en",
+          userRequirements: confirmData?.userRequirements || "",
         },
         files
       );
@@ -1243,12 +1246,16 @@ export default function Home() {
       const timelineMsgIdRef = { current: null as string | null };
       const pipelineHandlers = getPipelineHandlers(sessionId, timelineMsgIdRef);
 
+      const userRequirements = pendingEmailRequirementsRef.current;
+      pendingEmailRequirementsRef.current = "";
+
       await startConfirmedPipeline(
         {
           confirmType: "email_craft",
           leadIds,
           num: leadIds.length,
           language,
+          userRequirements,
         },
         {
           ...pipelineHandlers,
@@ -1452,7 +1459,19 @@ export default function Home() {
           onConfirmParams={onConfirmParamsProp}
           onConfirmEmailCraft={onConfirmEmailCraftProp}
           onCancelConfirm={onCancelConfirmProp}
-          onGoToCustomerList={() => handleNavChange("customer-list")}
+          onGoToCustomerList={() => {
+            // Save userRequirements from confirm card before navigating
+            const pending = pendingConfirmRef.current;
+            if (pending) {
+              const session = sessions.find((s) => s.id === pending.sessionId);
+              const msg = session?.messages.find((m) => m.id === pending.confirmMsgId);
+              const confirmData = msg?.confirmParams as any;
+              if (confirmData?.userRequirements) {
+                pendingEmailRequirementsRef.current = confirmData.userRequirements;
+              }
+            }
+            handleNavChange("customer-list");
+          }}
           companyProfile={companyProfile}
           emailSettings={emailSettings}
           onBackToChat={handleBackToChat}

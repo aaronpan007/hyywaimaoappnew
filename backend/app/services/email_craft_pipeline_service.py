@@ -233,7 +233,7 @@ def select_relevant_cases(customer: dict, all_cases: list, max_cases: int = 3) -
     return [case for _, case in scored[:max_cases]]
 
 
-def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None = None, language: str = "en") -> str:
+def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None = None, language: str = "en", user_requirements: str = "") -> str:
     """Build the user prompt for AI email generation.
 
     Ported from toolkit. Maps Lead model fields to prompt field names.
@@ -279,6 +279,11 @@ def build_user_prompt(customer: dict, profile: dict, selected_cases: list | None
             lines.append(build_profile_section(profile))
 
     lines.append("")
+    if user_requirements:
+        lines.append(f"=== 用户额外要求 ===")
+        lines.append(user_requirements)
+        lines.append("")
+
     if not (ai_summary or match_points or outreach or user_note):
         lines.append("")
         lines.append(
@@ -410,19 +415,19 @@ def _is_language_match(subject: str, body: str, language: str) -> bool:
     return cjk_count == 0
 
 
-def _generate_one_sync(customer: dict, profile: dict, system_prompt: str, language: str) -> dict | None:
+def _generate_one_sync(customer: dict, profile: dict, system_prompt: str, language: str, user_requirements: str = "") -> dict | None:
     """Generate a personalized email for a single customer. Synchronous.
 
     Returns {"email_subject": "...", "email_body": "..."} or None on failure.
     """
     all_cases = [cs for cs in profile.get("case_studies", []) if cs.get("usable_in_outreach")]
     selected_cases = select_relevant_cases(customer, all_cases, max_cases=3)
-    user_prompt = build_user_prompt(customer, profile, selected_cases, language)
+    user_prompt = build_user_prompt(customer, profile, selected_cases, language, user_requirements)
 
     for attempt in range(3):  # max_retries=2 → 3 attempts total
         try:
             output = replicate.run(
-                settings.replicate_model,
+                settings.replicate_model_advanced,
                 input={
                     "messages": [
                         {"role": "system", "content": system_prompt},
@@ -566,6 +571,7 @@ async def run_email_craft_pipeline(task_id: int, user_id: int, intent: dict):
     language = params.get("language", "en")
     lead_ids = params.get("lead_ids") or []
     source_task_id = params.get("source_task_id")
+    user_requirements = params.get("user_requirements", "")
 
     try:
         # ── Step 1: Load company profile ──
@@ -639,7 +645,7 @@ async def run_email_craft_pipeline(task_id: int, user_id: int, intent: dict):
 
             try:
                 result = await asyncio.to_thread(
-                    _generate_one_sync, customer, profile_data, system_prompt, language
+                    _generate_one_sync, customer, profile_data, system_prompt, language, user_requirements
                 )
             except Exception as e:
                 logger.error("Email generation error for %s: %s", company_name_lead, str(e)[:200])

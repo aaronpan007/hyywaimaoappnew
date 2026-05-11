@@ -705,6 +705,7 @@ export function startConfirmedPipeline(
     dryRun?: boolean;
     sendMode?: string;
     customerTypes?: string[];
+    userRequirements?: string;
   },
   handlers: StreamHandlers,
   signal?: AbortSignal

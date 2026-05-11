@@ -135,6 +135,7 @@ async def start_pipeline(
             "lead_count": imported_count or req.num,
             "lead_ids": req.lead_ids,
             "source_task_id": source_task_id,
+            "user_requirements": req.user_requirements,
             # files are pre-processed — do NOT pass to pipeline
         }
         result = await chat_service.start_email_craft_pipeline(params, db, user_id)
