@@ -793,3 +793,24 @@ def scrape_companies_sync_v2(
 ) -> list[dict]:
     """Synchronous v2 scraper entry point. Keeps v1 available unchanged."""
     return asyncio.run(_scrape_all_async_v2(companies, timeout_s, progress_callback))
+
+
+# ── Reusable pure-function helpers (used by profile_beta2) ──────────────────
+
+
+def extract_emails_from_text(text: str) -> list[str]:
+    """Extract valid email addresses from text, filtering low-value ones."""
+    return _extract_emails(text)
+
+
+def extract_phones_from_text(text: str) -> list[str]:
+    """Extract phone numbers from text (deduplicated, min 7 digits)."""
+    return _extract_phones(text)
+
+
+def extract_social_links_from_html(html: str, base_url: str) -> dict[str, str]:
+    """Extract social media links from HTML href attributes."""
+    href_pattern = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+    hrefs = href_pattern.findall(html or "")
+    links = [{"href": href, "text": ""} for href in hrefs]
+    return _extract_social_links(links)

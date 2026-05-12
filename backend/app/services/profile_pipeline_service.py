@@ -71,13 +71,14 @@ PROFILE_SYSTEM_PROMPT = """你是一位资深 B2B 销售资料顾问，负责按
 画像质量标准：
 1. 不只总结官网首页，要把资料转成销售可用的认知底座：产品适合谁、解决什么问题、为什么可信、开发信里怎么说。
 2. 必须尽量补齐 skill 文档要求的关键维度：基础信息、主营产品、核心竞争力、适合开发的客户类型、成功案例、证书资质、合作模式、独特卖点、客户匹配建议、信息边界、metadata。
-3. case_studies 必须尽量从 Projects / Cases / Gallery / Portfolio / Applications / Solutions / Clients 等资料中深挖；资料充分时目标至少 10 个案例，同类行业/地区只保留最有代表性的 2-3 个；资料不足时不要编造，在 metadata.notes 说明待补充。
-4. 每个案例优先补齐 project、project_en、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach。
-5. key_highlight 要能直接放进开发信，优先包含数字、地区、产品、交付结果；没有明确数据时不要编造，写可验证的简短亮点。
+3. case_studies 必须尽量从 Projects / Cases / Gallery / Portfolio / Applications / Solutions / Clients 等资料中深挖；资料充分时目标至少 10 个案例，每个案例即使属于同类行业或地区也请保留，不要合并或省略；资料不足时不要编造，在 metadata.notes 说明待补充。
+4. 每个案例必须包含 project（项目名）、industry（行业）、country（国家/地区）；证据充分时补齐 project_en、client_type、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach。证据不完整的字段留空，不要编造。
+5. 为控制输出长度，案例描述要精简：key_highlight 一句话概括（含数字/地区/产品），result 一句话概括；不要写大段描述。这样可以在有限输出中容纳更多案例。
+6. key_highlight 要能直接放进开发信，优先包含数字、地区、产品、交付结果；没有明确数据时不要编造，写可验证的简短亮点。
 6. customer_matching_guide 必须站在客户开发视角，说明哪类客户最值得开发、开发信优先强调什么、哪些话题要避免。
 7. boundaries 必须防止后续开发信乱写，明确 claims_we_can_make、claims_we_cannot_make、sensitive_topics。
 8. metadata 必须记录 source_urls、source_documents、profile_completeness 和仍需确认的 notes。
-9. profile_completeness 必须按已填字段真实评估：0.0-0.3=基础信息不足；0.3-0.6=有基本框架；0.6-0.8=较完整可用于开发信；0.8-1.0=覆盖关键维度。只要 products、case_studies、core_competencies 等已有实质内容，不得返回 0。
+9. profile_completeness 必须按已填字段真实评估：0.0-0.3=基础信息不足；0.3-0.6=有基本框架；0.6-0.8=较完整可用于开发信；0.8-1.0=覆盖关键维度。只要 products、case_studies、core_competencies 等已有实质内容，不得低于 0.3。无论资料来源是官网还是用户文字，只要有实质内容就应给予合理分数。
 
 返回 JSON 结构：
 {
@@ -385,18 +386,105 @@ def _parse_ai_json(response_text: str) -> dict | None:
     if match:
         text = match.group(1).strip()
 
+    # Pre-processing: strip AI image/video placeholders that break JSON
+    # Models sometimes emit [image], [Image: ...], [视频], [图片] etc.
+    text = re.sub(r'\[image(?::[^\]]*)?\]', '', text, flags=re.I)
+    text = re.sub(r'\[(?:图片|视频|photo|video|screenshot)(?::[^\]]*)?\]', '', text, flags=re.I)
+
+    # Try 1: direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    start = text.find("{")
-    end = text.rfind("}")
+    # Try 2: fix unescaped newlines inside JSON string values.
+    # LLMs sometimes emit raw newlines inside quoted strings.
+    # Replace \n (not preceded by \\) inside string regions with \\n.
+    def _fix_newlines_in_strings(s: str) -> str:
+        result = []
+        in_string = False
+        escape_next = False
+        for ch in s:
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+                continue
+            if ch == "\\":
+                result.append(ch)
+                escape_next = True
+                in_string = True  # may start/end string next
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                result.append(ch)
+                continue
+            if ch == "\n" and in_string:
+                result.append("\\n")
+                continue
+            result.append(ch)
+        return "".join(result)
+
+    text_fixed = _fix_newlines_in_strings(text)
+
+    # Try 3: strip // comments + fix newlines
+    # Must track string boundaries to avoid stripping // inside JSON values (e.g. URLs)
+    def _strip_line_comments(s: str) -> str:
+        lines = s.split("\n")
+        cleaned: list[str] = []
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            # Scan for // outside quoted strings
+            i = 0
+            comment_pos = -1
+            while i < len(line):
+                ch = line[i]
+                if ch == '"':
+                    # Skip to end of string
+                    i += 1
+                    while i < len(line):
+                        if line[i] == "\\" and i + 1 < len(line):
+                            i += 2
+                            continue
+                        if line[i] == '"':
+                            break
+                        i += 1
+                elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                    comment_pos = i
+                    break
+                i += 1
+            cleaned.append(line[:comment_pos] if comment_pos >= 0 else line)
+        return "\n".join(cleaned)
+
+    text_clean = _strip_line_comments(text_fixed)
+
+    try:
+        return json.loads(text_clean)
+    except json.JSONDecodeError:
+        pass
+
+    # Try 4: extract outermost JSON object + trailing comma fix
+    start = text_clean.find("{")
+    end = text_clean.rfind("}")
     if start >= 0 and end > start:
         try:
-            return json.loads(text[start : end + 1])
+            return json.loads(text_clean[start : end + 1])
         except json.JSONDecodeError:
-            return None
+            pass
+
+    # Try 5: aggressive — remove all control chars + trailing commas
+    import re as _re
+    text_aggressive = _re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text_clean)
+    text_aggressive = _re.sub(r",\s*([}\]])", r"\1", text_aggressive)
+    start = text_aggressive.find("{")
+    end = text_aggressive.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text_aggressive[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
     return None
 
 
@@ -966,10 +1054,11 @@ def _build_user_prompt(params: dict, source_text: str, scraped_markdown: str, im
 - 如果抓取资料中包含 Projects、Cases、Case Studies、Gallery、Portfolio、Applications、Solutions、Clients 等页面，请优先挖掘项目案例。
 - 案例必须来自资料里的明确线索，不能编造客户名、国家、数量、认证或效果。
 - 请严格按 company-profile skill 的销售资料标准处理：不要只写公司简介，要输出后续客户开发可直接复用的产品、客户类型、核心优势、案例亮点、合作模式、信息边界。
-- case_studies 资料充分时目标至少 10 个；每条尽量补齐：project、project_en、client_type、industry、country、products_used、area_or_quantity、problem_solved、result、key_highlight、usable_in_outreach；官网没有明确数据的字段留空或写入 metadata.notes，不能脑补。
+- case_studies 资料充分时目标至少 10 个；每个案例即使属于同类行业或地区也请保留，不要合并或省略；每条必须包含 project、industry、country，证据充分时补齐其余字段；官网没有明确数据的字段留空，不能脑补。
+- 案例描述要精简：key_highlight 一句话、result 一句话，不要大段描述，以便在有限输出中容纳更多案例。
 - customer_matching_guide 要具体到客户类型和开发信重点，不要写泛泛的“适合各类客户”。
 - boundaries 必须明确 claims_we_can_make、claims_we_cannot_make、sensitive_topics，避免后续开发信夸大或乱写。
-- metadata.profile_completeness 必须按字段完整度评估。只要已经识别出产品、案例、优势、客户类型等实质内容，不得返回 0。
+- metadata.profile_completeness 必须按字段完整度评估。只要已经识别出产品、案例、优势、客户类型等实质内容，不得低于 0.3；无论资料来源是官网还是用户文字，有实质内容就应给予合理分数。
 {image_block}
 === 用户原始输入 ===
 {user_message or source_text or "未提供"}

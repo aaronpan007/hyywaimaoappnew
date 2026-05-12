@@ -18,6 +18,7 @@ from app.services.conversation_service import create_conversation, save_message
 from app.services.intent_router import classify_intent
 from app.services.pipeline_service import run_pipeline
 from app.services.profile_pipeline_service import extract_url, run_profile_pipeline, run_profile_quick_edit, run_supplement_pipeline
+from app.services.profile_pipeline_beta2 import run_profile_pipeline_v2
 from app.services.profile_service import get_current_profile
 from app.utils.sse import sse_format
 
@@ -1022,9 +1023,15 @@ async def start_profile_pipeline(params: dict, db, user_id: int) -> dict:
     if profile_mode == "update" and not has_url:
         pipeline_func = run_profile_quick_edit
     elif profile_mode == "update":
-        pipeline_func = run_supplement_pipeline
+        if settings.company_profile_pipeline_version == "beta2":
+            pipeline_func = run_profile_pipeline_v2
+        else:
+            pipeline_func = run_supplement_pipeline
     else:
-        pipeline_func = run_profile_pipeline
+        if settings.company_profile_pipeline_version == "beta2":
+            pipeline_func = run_profile_pipeline_v2
+        else:
+            pipeline_func = run_profile_pipeline
     pipeline_task = asyncio.create_task(pipeline_func(task.id, user_id, intent))
     task_manager.register_task(task.id, pipeline_task)
 
